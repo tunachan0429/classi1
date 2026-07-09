@@ -23,7 +23,30 @@ run.bat 起動
 - Python 3.10 以上（[python.org](https://www.python.org/downloads/) からインストール。インストール時に **"Add Python to PATH"** に必ずチェック）
 - Gemini の API キー（無料）: [Google AI Studio](https://aistudio.google.com/apikey) で取得
 
-## セットアップ（初回だけ）
+## Pythonが入っていないPCで動かすには
+
+方法は2つあります。
+
+### 方法A（おすすめ・簡単）: Python を一度だけ入れる
+[python.org](https://www.python.org/downloads/) からインストーラを入れて、インストール時に
+**「Add Python to PATH」に必ずチェック**するだけです。あとは `run.bat` が残りを自動でやります。
+（Pythonのインストールは無料・数分で終わります）
+
+### 方法B（Python不要）: 実行ファイル(.exe)版を使う
+Python無しで動く `.exe` を、GitHubの無料環境で自動ビルドできます。手順：
+
+1. GitHubのこのリポジトリの **「Actions」タブ** を開く
+2. 左の一覧から **「Windows用exeをビルド」** を選ぶ
+3. 右上の **「Run workflow」** を押す（ブランチは `quiz-solver`）→ 数分待つ
+4. 完了したら、その実行結果ページ下部の **Artifacts** から
+   `classi1-quiz-solver-windows.zip` をダウンロード
+5. zipを解凍し、`.env.example` をコピーして `.env` を作成・設定
+6. **`quiz-solver.exe` をダブルクリック**（Pythonのインストール不要）
+
+> exe版はブラウザ(Chromium)も同梱しているので、そのまま動きます。
+> 初回起動時にWindowsの警告が出たら「詳細情報」→「実行」を選んでください。
+
+## セットアップ（初回だけ・Pythonがある場合）
 
 1. このフォルダ内の `.env.example` をコピーして、ファイル名を `.env` に変更する
 2. `.env` をメモ帳などで開き、次の2つを設定する

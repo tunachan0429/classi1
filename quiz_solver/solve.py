@@ -23,6 +23,24 @@ from google import genai
 from google.genai import types
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
+def app_dir():
+    """このプログラムが置かれているフォルダ。
+
+    exe(PyInstaller)で固めた場合はexeの場所、通常実行ならこのスクリプトの場所。
+    .env や 同梱ブラウザ を、実行方法に関わらず正しく見つけるために使う。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# exe実行時は、同梱したブラウザ(pw-browsers)の場所をPlaywrightに教える
+if getattr(sys, "frozen", False):
+    _bundled_browsers = os.path.join(app_dir(), "pw-browsers")
+    if os.path.isdir(_bundled_browsers):
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", _bundled_browsers)
+
+
 # 選択肢の記号 → ラジオの並び順(0始まり)の対応
 SYMBOLS = ["ア", "イ", "ウ", "エ"]
 
@@ -38,7 +56,8 @@ _MINUS_CHARS = "\u2212\uFF0D\u2010\u2011\u2013\u2014"
 # 設定の読み込み
 # ------------------------------------------------------------
 def load_config():
-    load_dotenv()  # .env を読み込む
+    # .env は「このプログラムのフォルダ」から読む(exe/通常実行どちらでもOK)
+    load_dotenv(os.path.join(app_dir(), ".env"))
     parser = argparse.ArgumentParser(description="過去問 自動答え合わせツール")
     parser.add_argument("--url", help="問題ページのURL (.envのQUIZ_URLより優先)")
     parser.add_argument("--headless", action="store_true", help="ブラウザを表示しない")

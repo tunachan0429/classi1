@@ -1,0 +1,78 @@
+name: Windows用exeをビルド
+
+# Pythonが入っていないPCでも動かせるよう、Windows用の実行ファイル(.exe)を作ります。
+# 手動実行(Actionsタブの「Run workflow」)か、quiz_solver配下の変更pushで走ります。
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [quiz-solver]
+    paths:
+      - "quiz_solver/**"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python を用意
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存ライブラリをインストール
+        working-directory: quiz_solver
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller playwright google-genai python-dotenv
+
+      - name: Chromium を同梱用フォルダに取得
+        working-directory: quiz_solver
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\quiz_solver\pw-browsers
+        run: python -m playwright install chromium
+
+      - name: exe をビルド
+        working-directory: quiz_solver
+        run: >
+          pyinstaller --noconfirm --onedir --name quiz-solver --console
+          --collect-all playwright
+          --collect-all google.genai
+          --collect-all google.ai
+          --collect-all certifi
+          solve.py
+
+      - name: 配布用フォルダを組み立て
+        working-directory: quiz_solver
+        shell: pwsh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\quiz_solver\pw-browsers
+        run: |
+          $out = "dist/quiz-solver"
+          # 同梱ブラウザをexeの隣に配置(実行時に自動で参照される)
+          Copy-Item -Recurse pw-browsers "$out/pw-browsers"
+          # 設定テンプレと説明書を同梱
+          Copy-Item .env.example "$out/.env.example"
+          Copy-Item README.md "$out/README.md"
+          # 起動用の説明メモ
+          @"
+          ■ 使い方(Python不要版)
+          1. このフォルダ内の .env.example をコピーして .env にリネーム
+          2. .env をメモ帳で開き、GEMINI_API_KEY などを設定して保存
+          3. quiz-solver.exe をダブルクリック
+          ※ 初回はWindowsの警告が出ることがあります(詳細情報→実行)。
+          "@ | Out-File -FilePath "$out/はじめにお読みください.txt" -Encoding utf8
+
+      - name: zip にまとめる
+        working-directory: quiz_solver
+        shell: pwsh
+        run: Compress-Archive -Path "dist/quiz-solver/*" -DestinationPath "classi1-quiz-solver-windows.zip" -Force
+
+      - name: 成果物(zip)をアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: classi1-quiz-solver-windows
+          path: quiz_solver/classi1-quiz-solver-windows.zip
+          retention-days: 30
