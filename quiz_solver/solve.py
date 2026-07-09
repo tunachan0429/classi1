@@ -36,6 +36,7 @@ def load_config():
     parser.add_argument("--url", help="問題ページのURL (.envのQUIZ_URLより優先)")
     parser.add_argument("--headless", action="store_true", help="ブラウザを表示しない")
     parser.add_argument("--no-submit", action="store_true", help="採点ボタンを押さない")
+    parser.add_argument("--max", type=int, help="解く問題の最大数 (.envのMAX_QUESTIONSより優先)")
     args = parser.parse_args()
 
     cfg = {
@@ -48,6 +49,14 @@ def load_config():
         "form_selector": os.getenv("FORM_SELECTOR", "tui-single-select-form").strip(),
         "radio_name": os.getenv("RADIO_NAME", "answer-option").strip(),
         "submit_selector": "" if args.no_submit else os.getenv("SUBMIT_SELECTOR", "").strip(),
+        # 1問ごとに押す「回答」ボタン(空ならボタン文言から自動検出)
+        "answer_button_selector": os.getenv("ANSWER_BUTTON_SELECTOR", "").strip(),
+        # 回答後にフィードバック画面などで出る「次へ」ボタン(空なら文言から自動検出)
+        "next_selector": os.getenv("NEXT_SELECTOR", "").strip(),
+        # 解く問題数の上限(暴走防止のセーフティ)
+        "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
+        # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
+        "question_timeout": int(os.getenv("QUESTION_TIMEOUT_MS", "20000")),
         # --- ログイン設定(自分のサイト用。空なら未使用) ---
         "login_url": os.getenv("LOGIN_URL", "").strip(),
         "login_user": os.getenv("LOGIN_USER", ""),
@@ -401,6 +410,180 @@ def open_quiz_page(page, cfg):
 
 
 # ------------------------------------------------------------
+# 「回答」ボタン・「次へ」ボタンを探す
+# ------------------------------------------------------------
+ANSWER_BUTTON_TEXTS = ["回答する", "解答する", "回答", "解答", "答える", "決定", "送信する"]
+NEXT_BUTTON_TEXTS = ["次の問題", "次へ進む", "次に進む", "次へ", "つぎへ", "続ける", "進む"]
+# クリック対象になりうる要素(テキスト検索の対象を絞る)
+_CLICKABLE = "button, a, [role=button], input[type=submit], input[type=button]"
+
+
+def _loc_visible(loc):
+    """ロケータが1つ以上あり、先頭が表示されているか(例外は握りつぶす)。"""
+    try:
+        return loc.count() > 0 and loc.first.is_visible()
+    except Exception:
+        return False
+
+
+def _find_button(page, selector, texts):
+    """selector優先で、無ければ文言(texts)からボタンを探し、表示中の先頭を返す。"""
+    # 1) 明示セレクタ
+    if selector:
+        loc = page.locator(selector)
+        if _loc_visible(loc):
+            return loc.first
+    # 2) 文言で探す(クリック可能な要素に限定)
+    for t in texts:
+        loc = page.locator(_CLICKABLE).filter(has_text=t)
+        if _loc_visible(loc):
+            return loc.first
+        # input[type=submit/button] は value 属性に文言が入る
+        loc = page.locator(
+            f'input[type=submit][value*="{t}"], input[type=button][value*="{t}"]'
+        )
+        if _loc_visible(loc):
+            return loc.first
+        # aria-label など(アクセシブル名)でも探す
+        try:
+            loc = page.get_by_role("button", name=t)
+            if _loc_visible(loc):
+                return loc.first
+        except Exception:
+            pass
+    return None
+
+
+def find_answer_button(page, cfg):
+    """1問ごとの「回答」ボタンを探す。"""
+    return _find_button(page, cfg["answer_button_selector"], ANSWER_BUTTON_TEXTS)
+
+
+def try_click_next(page, cfg):
+    """フィードバック画面などで出る「次へ」ボタンがあれば押す。"""
+    btn = _find_button(page, cfg["next_selector"], NEXT_BUTTON_TEXTS)
+    if btn is not None:
+        print("  「次へ」ボタンを押します")
+        move_and_click(page, btn)
+        return True
+    return False
+
+
+def question_signature(page, cfg):
+    """今表示中の問題を識別する署名(URL + 設問テキストの先頭)。
+
+    これが変われば「次の問題に切り替わった」とみなす。
+    """
+    parts = [page.url]
+    loc = page.locator(cfg["question_selector"])
+    try:
+        if loc.count() > 0:
+            parts.append((loc.first.inner_text() or "").strip()[:300])
+    except Exception:
+        pass
+    return "||".join(parts)
+
+
+def wait_for_next_question(page, cfg, old_sig):
+    """回答後、問題が切り替わる(署名が変わる)のを待つ。
+
+    フィードバック画面で止まっている場合は「次へ」ボタンを一度押して先に進める。
+    切り替われば True、時間内に変わらなければ False。
+    """
+    deadline = time.time() + cfg["question_timeout"] / 1000.0
+    tried_next = False
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if question_signature(page, cfg) != old_sig:
+            return True
+        if not tried_next and try_click_next(page, cfg):
+            tried_next = True
+            time.sleep(0.5)
+    return False
+
+
+# ------------------------------------------------------------
+# 全問を「解く→選択→回答→次へ」で回す
+# ------------------------------------------------------------
+def solve_all_questions(page, client, cfg):
+    results = []
+    for qi in range(1, cfg["max_questions"] + 1):
+        # 現在の問題の解答欄が表示されるのを待つ
+        try:
+            page.wait_for_selector(
+                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
+            )
+        except PWTimeoutError:
+            if qi == 1:
+                print(f"[エラー] 解答欄({cfg['form_selector']})が見つかりませんでした。")
+                print("        .env のセレクタ設定を確認してください。")
+            else:
+                print("これ以上、解答欄が見つからないため終了します(全問終了とみなします)。")
+            break
+
+        print(f"===== 設問 {qi} =====")
+        form = page.locator(cfg["form_selector"]).first
+        sig = question_signature(page, cfg)
+
+        options = extract_options(form)
+        if not options:
+            print("  選択肢が取得できませんでした。終了します。")
+            break
+
+        q_text = nearest_question_text(form, cfg["question_selector"])
+        shot_target = page.locator(cfg["question_selector"])
+        if shot_target.count() == 0:
+            shot_target = form  # 見つからなければフォームだけ
+        img_bytes = shot_target.first.screenshot()
+
+        # Gemini に解かせる
+        print("  Geminiに問い合わせ中...")
+        answer, reason, raw = ask_gemini(client, cfg["model"], img_bytes, q_text, options)
+
+        # 記号 → 対応するラジオを決める
+        target = None
+        if answer:
+            print(f"  → Geminiの解答: 【{answer}】  根拠: {reason or '(なし)'}")
+            for o in options:
+                if (o["symbol"] or SYMBOLS[o["index"]]) == answer:
+                    target = o
+                    break
+        if target is None:
+            # 判定不能/記号不一致でも、どんどん進めるため先頭を仮選択する
+            target = options[0]
+            shown = answer or "不明"
+            fallback_sym = target["symbol"] or SYMBOLS[target["index"]]
+            print(f"  [注意] 解答を確定できませんでした(Gemini: {shown})。仮に「{fallback_sym}」を選びます。")
+            results.append((qi, f"{shown}(仮選択)"))
+        else:
+            results.append((qi, answer))
+
+        # ラジオを選択
+        label = target["input"].locator("xpath=ancestor::label[1]")
+        click_target = label if label.count() > 0 else target["input"]
+        move_and_click(page, click_target.first)
+        sym = target["symbol"] or SYMBOLS[target["index"]]
+        print(f"  ✓ 「{sym}」(value={target['value']}) を選択しました")
+        time.sleep(0.3)
+
+        # 「回答」ボタンを押して次の問題へ
+        btn = find_answer_button(page, cfg)
+        if btn is None:
+            print("  [終了] 回答ボタンが見つかりませんでした(最後の問題だった可能性があります)。")
+            print("         もし回答ボタンがあるのに押せない場合は .env の ANSWER_BUTTON_SELECTOR を設定してください。")
+            break
+        print("  回答ボタンを押します")
+        move_and_click(page, btn)
+
+        # 次の問題に切り替わるのを待つ(必要なら「次へ」も押す)
+        if not wait_for_next_question(page, cfg, sig):
+            print("  [終了] 次の問題に切り替わりませんでした。全問終了とみなします。\n")
+            break
+        print()
+    return results
+
+
+# ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
 def run(cfg):
@@ -426,78 +609,20 @@ def run(cfg):
             browser.close()
             return
 
-        # 解答フォームを待つ
-        try:
-            page.wait_for_selector(cfg["form_selector"], timeout=20000)
-        except PWTimeoutError:
-            print(f"[エラー] 解答欄({cfg['form_selector']})が見つかりませんでした。")
-            print("        .env のセレクタ設定を確認してください。")
-            browser.close()
-            return
+        # 全問を「解く→選択→回答→次へ」で順番に処理する
+        results = solve_all_questions(page, client, cfg)
 
-        forms = page.locator(cfg["form_selector"])
-        n = forms.count()
-        print(f"[検出] 解答欄を {n} 個みつけました\n")
-
-        results = []
-        for i in range(n):
-            form = forms.nth(i)
-            print(f"===== 設問 {i + 1} / {n} =====")
-
-            options = extract_options(form)
-            if not options:
-                print("  選択肢が取得できませんでした。スキップします。\n")
-                continue
-
-            q_text = nearest_question_text(form, cfg["question_selector"])
-
-            # 問題全体のスクショ(表・図を含めるため QUESTION_SELECTOR 範囲)
-            shot_target = page.locator(cfg["question_selector"])
-            if shot_target.count() == 0:
-                shot_target = form  # 見つからなければフォームだけ
-            img_bytes = shot_target.first.screenshot()
-
-            # Gemini に解かせる
-            print("  Geminiに問い合わせ中...")
-            answer, reason, raw = ask_gemini(
-                client, cfg["model"], img_bytes, q_text, options
-            )
-
-            if not answer:
-                print(f"  [判定不能] Geminiの返答: {raw[:120]}\n")
-                results.append((i + 1, "不明"))
-                continue
-
-            print(f"  → Geminiの解答: 【{answer}】  根拠: {reason or '(なし)'}")
-
-            # 記号 → 対応するラジオを探してクリック
-            target = None
-            for o in options:
-                if (o["symbol"] or SYMBOLS[o["index"]]) == answer:
-                    target = o
-                    break
-            if target is None:
-                print("  対応するラジオが見つかりませんでした。\n")
-                results.append((i + 1, answer + "(選択失敗)"))
-                continue
-
-            label = target["input"].locator("xpath=ancestor::label[1]")
-            click_target = label if label.count() > 0 else target["input"]
-            move_and_click(page, click_target.first)
-            print(f"  ✓ 「{answer}」(value={target['value']}) を選択しました\n")
-            results.append((i + 1, answer))
-            time.sleep(0.5)
-
-        # 採点/送信ボタン
+        # 最後に採点/送信ボタン(設定されていて、表示されていれば)
         if cfg["submit_selector"]:
             btn = page.locator(cfg["submit_selector"])
-            if btn.count() > 0:
+            if _loc_visible(btn):
                 print(f"[送信] {cfg['submit_selector']} をクリックします")
                 move_and_click(page, btn.first)
                 time.sleep(1.5)
 
         # サマリ
         print("\n========== 結果一覧 ==========")
+        print(f"  解いた問題数: {len(results)}")
         for num, ans in results:
             print(f"  設問{num}: {ans}")
         print("==============================")

@@ -9,6 +9,7 @@ LOGIN_MOCK = pathlib.Path(__file__).parent / "mock" / "login.html"
 LOGIN_2STEP_MOCK = pathlib.Path(__file__).parent / "mock" / "login_2step.html"
 LOGIN_ENTER_MOCK = pathlib.Path(__file__).parent / "mock" / "login_enter.html"
 QUIZ_GUARDED_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_guarded.html"
+QUIZ_MULTI_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_multi.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -117,6 +118,35 @@ def test_open_quiz_page(browser):
         page.close()
 
 
+def test_solve_all_questions(browser):
+    """1問ずつ「選択→回答ボタン→次の問題」で全問を回せるか(Geminiはスタブ)。"""
+    cfg = {
+        "url": QUIZ_MULTI_MOCK.resolve().as_uri(),
+        "form_selector": "tui-single-select-form",
+        "question_selector": "tui-section-question",
+        "answer_button_selector": "",   # 文言「回答」から自動検出させる
+        "next_selector": "",
+        "max_questions": 50,
+        "question_timeout": 5000,
+        "model": "dummy",
+    }
+    # Gemini を呼ばずに、常に「ア」を返すスタブに差し替える
+    original = solve.ask_gemini
+    solve.ask_gemini = lambda client, model, img, qtext, options: ("ア", "テスト用", "ア")
+    try:
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(cfg["url"])
+        results = solve.solve_all_questions(page, None, cfg)
+        assert len(results) == 3, f"3問すべて解く想定だが {len(results)} 問だった: {results}"
+        assert page.locator("#done").is_visible(), "完了表示が出ていない"
+        # 各問「ア」を選んで回答できたこと
+        assert all(ans == "ア" for _, ans in results), f"回答内容が想定と違う: {results}"
+        page.close()
+    finally:
+        solve.ask_gemini = original
+    print(f"連続回答(選択→回答→次へ)テスト OK: {len(results)}問を処理")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -130,6 +160,11 @@ def main():
         # 0b) 問題ページで再ログインするテスト
         print("---- 問題ページ再ログインテスト ----")
         test_open_quiz_page(browser)
+        print()
+
+        # 0c) 連続回答(選択→回答→次へ)のテスト
+        print("---- 連続回答テスト ----")
+        test_solve_all_questions(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})

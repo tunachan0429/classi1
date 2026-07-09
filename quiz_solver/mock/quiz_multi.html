@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 連続問題ページ</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    label { display: block; margin: 6px 0; }
+    .symbol { font-weight: bold; margin-right: 8px; }
+    #done { display: none; color: green; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <!-- 1問ずつ表示し、「回答」ボタンで次の問題に切り替わる想定(SPA的にDOMを差し替え) -->
+  <div id="quiz-area"></div>
+  <button id="answer-btn" type="button" onclick="onAnswer()">回答</button>
+  <div id="done">全問終了しました</div>
+
+  <script>
+    // 練習問題(3問)。正解はどれでもよい(テストはGeminiをスタブするため)
+    const QUESTIONS = [
+      { title: "練習問題01", text: "1 + 1 は？", choices: ["1", "2", "3", "4"] },
+      { title: "練習問題02", text: "2 + 3 は？", choices: ["4", "5", "6", "7"] },
+      { title: "練習問題03", text: "10 - 4 は？", choices: ["5", "6", "7", "8"] },
+    ];
+    const SYMBOLS = ["ア", "イ", "ウ", "エ"];
+    let idx = 0;
+
+    function render() {
+      const q = QUESTIONS[idx];
+      let html = '<tui-section-question class="tui-image-container">';
+      html += '<h2 class="title">' + q.title + '</h2>';
+      html += '<tui-question-content><tui-rich-text><p>' + q.text + '</p></tui-rich-text>';
+      html += '<tui-single-select-form>';
+      q.choices.forEach(function (c, i) {
+        html += '<label><input type="radio" name="answer-option" value="SINGLE_SELECT_' + i + '">'
+             +  '<span class="symbol">' + SYMBOLS[i] + '</span><span>' + c + '</span></label>';
+      });
+      html += '</tui-single-select-form></tui-question-content></tui-section-question>';
+      document.getElementById('quiz-area').innerHTML = html;
+    }
+
+    function onAnswer() {
+      // 選択されていなければ何もしない(実際のサイト同様、未選択では進めない想定)
+      const checked = document.querySelector('input[name=answer-option]:checked');
+      if (!checked) return;
+      idx += 1;
+      if (idx < QUESTIONS.length) {
+        render();
+      } else {
+        // 全問終了 → 問題を消して完了表示にする
+        document.getElementById('quiz-area').innerHTML = '';
+        document.getElementById('answer-btn').style.display = 'none';
+        document.getElementById('done').style.display = 'block';
+      }
+    }
+
+    render();
+  </script>
+</body>
+</html>
