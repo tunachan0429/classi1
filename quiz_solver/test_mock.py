@@ -5,13 +5,61 @@ from playwright.sync_api import sync_playwright
 import solve
 
 MOCK = pathlib.Path(__file__).parent / "mock" / "quiz.html"
+LOGIN_MOCK = pathlib.Path(__file__).parent / "mock" / "login.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
+
+
+def make_login_cfg(user, password):
+    """login() に渡すための最小限の設定を組み立てる。"""
+    return {
+        "use_login": True,
+        "login_url": LOGIN_MOCK.resolve().as_uri(),
+        "login_user": user,
+        "login_pass": password,
+        "login_user_selector": "input[name=username]",
+        "login_pass_selector": "input[type=password]",
+        "login_button_selector": "button[type=submit]",
+        "login_success_selector": "#dashboard",
+    }
+
+
+def test_login(browser):
+    """正しい資格情報でログインでき、間違いは失敗として検出できるか。"""
+    # 1) 正しい資格情報 → 成功
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.login(page, make_login_cfg("testuser", "testpass"))
+    assert page.locator("#dashboard").count() == 1, "ログイン後の目印が出ていない"
+    page.close()
+    print("ログイン成功ケース OK")
+
+    # 2) 間違った資格情報 → 例外(検証失敗)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        solve.login(page, make_login_cfg("wrong", "wrong"))
+    except RuntimeError:
+        print("ログイン失敗ケース OK (誤資格情報を正しく検出)")
+    else:
+        raise AssertionError("誤った資格情報なのにログイン成功と判定された")
+    finally:
+        page.close()
+
+    # 3) ログイン設定なし → 何もせず素通り
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.login(page, {"use_login": False})
+    page.close()
+    print("ログイン未設定ケース OK (スキップ)")
 
 
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+
+        # 0) ログイン処理のテスト
+        print("---- ログインテスト ----")
+        test_login(browser)
+        print()
+
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.goto(url)
         solve.install_cursor(page)

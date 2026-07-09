@@ -48,7 +48,17 @@ def load_config():
         "form_selector": os.getenv("FORM_SELECTOR", "tui-single-select-form").strip(),
         "radio_name": os.getenv("RADIO_NAME", "answer-option").strip(),
         "submit_selector": "" if args.no_submit else os.getenv("SUBMIT_SELECTOR", "").strip(),
+        # --- ログイン設定(自分のサイト用。空なら未使用) ---
+        "login_url": os.getenv("LOGIN_URL", "").strip(),
+        "login_user": os.getenv("LOGIN_USER", ""),
+        "login_pass": os.getenv("LOGIN_PASS", ""),
+        "login_user_selector": os.getenv("LOGIN_USER_SELECTOR", "input[name=username]").strip(),
+        "login_pass_selector": os.getenv("LOGIN_PASS_SELECTOR", "input[type=password]").strip(),
+        "login_button_selector": os.getenv("LOGIN_BUTTON_SELECTOR", "button[type=submit]").strip(),
+        "login_success_selector": os.getenv("LOGIN_SUCCESS_SELECTOR", "").strip(),
     }
+    # ログインを使うかどうか(URL・ユーザー・パスワードが揃っていれば有効)
+    cfg["use_login"] = bool(cfg["login_url"] and cfg["login_user"] and cfg["login_pass"])
 
     # 必須項目チェック
     problems = []
@@ -61,6 +71,13 @@ def load_config():
         for p in problems:
             print("  - " + p)
         sys.exit(1)
+
+    # ログイン設定が一部だけ書かれている場合は注意を出す(ログインはスキップされる)
+    partial = [cfg["login_url"], cfg["login_user"], cfg["login_pass"]]
+    if any(partial) and not all(partial):
+        print("[注意] LOGIN_URL / LOGIN_USER / LOGIN_PASS のうち一部だけが設定されています。")
+        print("       3つすべてを設定しないとログインはスキップされます。\n")
+
     return cfg
 
 
@@ -215,6 +232,67 @@ def move_and_click(page, target_locator):
 
 
 # ------------------------------------------------------------
+# 自分のサイトへログインする
+# ------------------------------------------------------------
+def login(page, cfg):
+    """LOGIN_URL を開き、ユーザー名・パスワードを入力してログインする。
+
+    ログイン設定(URL・ユーザー・パスワード)が揃っていない場合は何もしない。
+    成功可否は LOGIN_SUCCESS_SELECTOR が指定されていればそれで確認する。
+    """
+    if not cfg["use_login"]:
+        return
+
+    print(f"[ログイン] {cfg['login_url']}")
+    page.goto(cfg["login_url"], wait_until="networkidle", timeout=60000)
+    install_cursor(page)
+
+    # ユーザー名
+    try:
+        page.wait_for_selector(cfg["login_user_selector"], timeout=15000)
+        page.fill(cfg["login_user_selector"], cfg["login_user"])
+    except PWTimeoutError:
+        print(f"  [エラー] ユーザー名入力欄({cfg['login_user_selector']})が見つかりませんでした。")
+        print("          .env の LOGIN_USER_SELECTOR を確認してください。")
+        raise
+
+    # パスワード
+    try:
+        page.fill(cfg["login_pass_selector"], cfg["login_pass"])
+    except PWTimeoutError:
+        print(f"  [エラー] パスワード入力欄({cfg['login_pass_selector']})が見つかりませんでした。")
+        print("          .env の LOGIN_PASS_SELECTOR を確認してください。")
+        raise
+
+    # ログインボタン → 遷移待ち
+    btn = page.locator(cfg["login_button_selector"])
+    if btn.count() == 0:
+        print(f"  [エラー] ログインボタン({cfg['login_button_selector']})が見つかりませんでした。")
+        print("          .env の LOGIN_BUTTON_SELECTOR を確認してください。")
+        raise RuntimeError("login button not found")
+
+    move_and_click(page, btn.first)
+
+    # ログイン成功の確認
+    if cfg["login_success_selector"]:
+        # 目印が指定されていれば、それが現れるまで待つ(遷移でもSPAでもOK)
+        try:
+            page.wait_for_selector(cfg["login_success_selector"], timeout=20000)
+        except PWTimeoutError:
+            print(f"  [エラー] ログイン後の目印({cfg['login_success_selector']})が現れませんでした。")
+            print("          ユーザー名/パスワード、または LOGIN_SUCCESS_SELECTOR を確認してください。")
+            raise RuntimeError("login verification failed")
+    else:
+        # 目印がなければ、ページの読み込みが落ち着くのを待つだけ(best-effort)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except PWTimeoutError:
+            pass
+
+    print("  ✓ ログインに成功しました\n")
+
+
+# ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
 def run(cfg):
@@ -223,6 +301,14 @@ def run(cfg):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=cfg["headless"], slow_mo=cfg["slow_mo"])
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+
+        # 先にログイン(設定があるときだけ実行)。同じブラウザなのでセッションは引き継がれる
+        try:
+            login(page, cfg)
+        except Exception as e:
+            print(f"[エラー] ログインに失敗したため中止します: {e}")
+            browser.close()
+            return
 
         print(f"[開く] {cfg['url']}")
         page.goto(cfg["url"], wait_until="networkidle", timeout=60000)
