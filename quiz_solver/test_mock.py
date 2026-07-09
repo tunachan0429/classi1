@@ -224,20 +224,25 @@ def test_full_flow(browser):
         "assignment_selector": ".assignment",
         "incomplete_text": "未完了",
         "max_assignments": 10,
+        "max_steps": 20,
     }
     original = solve.ask_gemini
     solve.ask_gemini = lambda client, model, img, qtext, options: ("ア", "テスト用", "ア")
     try:
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+        # sessionStorage をまっさらにするため一度開いてクリア
         page.goto(cfg["url"])
+        page.evaluate("() => sessionStorage.clear()")
+        page.reload()
         all_results = solve.run_assignments(page, None, cfg)
+        # 課題A(テスト2問 + おすすめ演習1問 = 3問), 課題B(テスト2問)
         assert len(all_results) == 2, f"2課題を処理する想定だが {len(all_results)} 件: {all_results}"
-        for title, results in all_results:
-            assert len(results) == 2, f"各課題2問の想定だが {title} は {len(results)} 問"
+        counts = [len(r) for _, r in all_results]
+        assert counts == [3, 2], f"各課題の問題数が想定と違う(課題A=3, 課題B=2 のはず): {counts}"
         page.close()
     finally:
         solve.ask_gemini = original
-    print(f"全自動フロー OK: {len(all_results)}課題を巡回して解答")
+    print(f"全自動フロー(マルチステップ) OK: {len(all_results)}課題, 各問題数={counts}")
 
 
 def main():

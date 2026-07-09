@@ -79,6 +79,8 @@ def load_config():
         "incomplete_text": os.getenv("INCOMPLETE_TEXT", "未完了").strip(),
         # 巡回する課題数の上限(暴走防止)
         "max_assignments": int(os.getenv("MAX_ASSIGNMENTS", "50")),
+        # 1課題あたりのステップ数の上限(テスト/おすすめ演習など。暴走防止)
+        "max_steps": int(os.getenv("MAX_STEPS", "20")),
         # --- ログイン設定(自分のサイト用。空なら未使用) ---
         "login_url": os.getenv("LOGIN_URL", "").strip(),
         "login_user": os.getenv("LOGIN_USER", ""),
@@ -882,6 +884,61 @@ def go_to_assignment_list(page, cfg):
     return False
 
 
+def _back_to_steps(page, cfg):
+    """クイズ後、「答え合わせへ」→「課題詳細画面へ」を押して課題詳細(ステップ一覧)に戻る。"""
+    dismiss_abort_modal(page)
+    click_text(page, cfg["grading_text"], optional=True)
+    time.sleep(0.6)
+    dismiss_abort_modal(page)
+    click_text(page, cfg["back_to_list_text"], optional=True)
+    time.sleep(0.8)
+    dismiss_abort_modal(page)
+    return True
+
+
+def solve_one_assignment(page, client, cfg):
+    """課題詳細画面で、未完了のステップ(「開始する」)が無くなるまで順に全部解く。
+
+    課題は「テストを解く」だけでなく「おすすめ演習」など複数ステップがあり、
+    すべてのステップを終えないと課題完了にならない。開始するボタンが無くなるまで繰り返す。
+    """
+    results = []
+    for step in range(1, cfg["max_steps"] + 1):
+        time.sleep(0.4)
+        dismiss_abort_modal(page)
+
+        # 未完了ステップの「開始する」を探す(無ければ全ステップ完了)
+        start_btn = _find_button(page, "", [cfg["start_text"]])
+        if start_btn is None:
+            if step == 1:
+                print("  [注意] このページに「開始する」が見つかりませんでした。")
+                print("         .env の START_TEXT を確認してください。")
+            else:
+                print("  この課題のステップはすべて完了しました。")
+            break
+
+        print(f"  --- ステップ {step}: 「{cfg['start_text']}」を押します ---")
+        move_and_click(page, start_btn)
+
+        # 解答欄が出るまで待つ(動画のみのステップ等、問題が無い場合もある)
+        try:
+            page.wait_for_selector(
+                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
+            )
+        except PWTimeoutError:
+            print("  [注意] このステップには解ける問題が見つかりませんでした。詳細画面に戻ります。")
+            _back_to_steps(page, cfg)
+            continue
+
+        # このステップの全問を解く
+        step_results = solve_all_questions(page, client, cfg)
+        results.extend(step_results)
+
+        # 答え合わせへ → 課題詳細画面へ でステップ一覧に戻る
+        _back_to_steps(page, cfg)
+    return results
+
+
 def run_assignments(page, client, cfg):
     """課題一覧から未完了の課題を順に開いて解き、次の課題へ進むのを繰り返す。"""
     print("[自動巡回] 課題を上から順に解いていきます\n")
@@ -912,33 +969,9 @@ def run_assignments(page, client, cfg):
         move_and_click(page, el)
         time.sleep(0.6)
 
-        # 「開始する」を押す
-        if not click_text(page, cfg["start_text"], optional=True):
-            print("  [注意] 「開始する」が見つかりませんでした。次の課題へ移ります。")
-            continue
-        time.sleep(0.6)
-
-        # 解答欄が出るまで待つ
-        try:
-            page.wait_for_selector(
-                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
-            )
-        except PWTimeoutError:
-            print("  [注意] 問題が表示されませんでした。次の課題へ移ります。")
-            continue
-
-        # 全問を解く
-        results = solve_all_questions(page, client, cfg)
+        # この課題の全ステップ(テスト/おすすめ演習など)を解く
+        results = solve_one_assignment(page, client, cfg)
         all_results.append((key, results))
-
-        # 「答え合わせへ」→「課題詳細画面へ」を押して一覧へ戻る
-        dismiss_abort_modal(page)
-        click_text(page, cfg["grading_text"], optional=True)
-        time.sleep(0.6)
-        dismiss_abort_modal(page)
-        click_text(page, cfg["back_to_list_text"], optional=True)
-        time.sleep(0.6)
-        dismiss_abort_modal(page)
 
     # サマリ
     print("\n========== 全課題の結果 ==========")

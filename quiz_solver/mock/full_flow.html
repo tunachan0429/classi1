@@ -2,16 +2,18 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>モック 全自動フロー</title>
+  <title>モック 全自動フロー(マルチステップ)</title>
   <style>
     body { font-family: sans-serif; padding: 24px; }
     .screen { display: none; }
     .screen.active { display: block; }
     .assignment { border: 1px solid #ccc; padding: 12px; margin: 8px 0; cursor: pointer; }
+    .step { border: 2px solid #26c; padding: 12px; margin: 8px 0; }
     .status { color: #c00; font-weight: bold; }
     .status.done { color: #090; }
     .symbol { font-weight: bold; margin-right: 8px; }
-    button { margin: 8px 0; padding: 8px 16px; }
+    button { margin: 6px 0; padding: 8px 16px; }
+    .kadai-complete { color: #999; border: 1px solid #ddd; padding: 10px; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -35,11 +37,12 @@
     <div id="assignment-list"></div>
   </div>
 
-  <!-- 課題詳細(開始する) -->
+  <!-- 課題詳細(ステップ一覧) -->
   <div id="detail" class="screen">
     <h1 id="detail-title"></h1>
     <p>学習の内容</p>
-    <button onclick="startQuiz()">開始する</button>
+    <div id="step-list"></div>
+    <div class="kadai-complete" id="kadai-complete">課題完了</div>
     <button onclick="show('list')">課題を中断する</button>
   </div>
 
@@ -50,62 +53,92 @@
     <button id="grade-btn" style="display:none" onclick="goResult()">答え合わせへ</button>
   </div>
 
-  <!-- 結果(課題詳細画面へ) -->
+  <!-- 結果 -->
   <div id="result" class="screen">
     <h1>結果</h1>
     <p>すべての問題に解答済みです</p>
-    <button onclick="backToList()">課題詳細画面へ</button>
+    <button onclick="backToDetail()">課題詳細画面へ</button>
   </div>
 
   <script>
-    // 2つの課題。それぞれ2問。
+    // 課題ごとに複数ステップ。各ステップに問題。
     const ASSIGNMENTS = [
-      { name: "[英語] 課題A", questions: [
-          { text: "1+1は？", choices: ["1", "2", "3", "4"] },
-          { text: "2+2は？", choices: ["3", "4", "5", "6"] } ] },
-      { name: "[英語] 課題B", questions: [
-          { text: "3+3は？", choices: ["5", "6", "7", "8"] },
-          { text: "4+4は？", choices: ["7", "8", "9", "10"] } ] },
+      { name: "[英語] 課題A", steps: [
+          { title: "テストを解く", questions: [
+              { text: "1+1は？", choices: ["1", "2", "3", "4"] },
+              { text: "2+2は？", choices: ["3", "4", "5", "6"] } ] },
+          { title: "おすすめ演習", questions: [
+              { text: "3+3は？", choices: ["5", "6", "7", "8"] } ] } ] },
+      { name: "[英語] 課題B", steps: [
+          { title: "テストを解く", questions: [
+              { text: "4+4は？", choices: ["7", "8", "9", "10"] },
+              { text: "5+5は？", choices: ["9", "10", "11", "12"] } ] } ] },
     ];
     const SYMBOLS = ["ア", "イ", "ウ", "エ"];
-    const completed = [false, false];
-    let curAssign = -1;
-    let curQ = 0;
+
+    // 完了状態は sessionStorage に保存(リロードしても残る = 実サイトの疑似)
+    function loadState() {
+      const raw = sessionStorage.getItem('mockState');
+      if (raw) return JSON.parse(raw);
+      return {
+        completed: ASSIGNMENTS.map(function () { return false; }),
+        stepDone: ASSIGNMENTS.map(function (a) { return a.steps.map(function () { return false; }); }),
+      };
+    }
+    function saveState() { sessionStorage.setItem('mockState', JSON.stringify(state)); }
+    let state = loadState();
+
+    let curAssign = -1, curStep = -1, curQ = 0;
 
     function show(id) {
       document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('active'); });
       document.getElementById(id).classList.add('active');
       if (id === 'list') renderList();
+      if (id === 'detail') renderSteps();
     }
 
     function renderList() {
       let html = '';
       ASSIGNMENTS.forEach(function (a, i) {
-        const st = completed[i] ? '<span class="status done">完了</span>' : '<span class="status">未完了</span>';
+        const st = state.completed[i]
+          ? '<span class="status done">完了</span>'
+          : '<span class="status">未完了</span>';
         html += '<div class="assignment" onclick="openDetail(' + i + ')">'
-             +  st + '<div class="title">' + a.name + '</div>'
-             +  '<div>解答目安時間: 5分 (' + a.questions.length + '問)</div></div>';
+             +  st + '<div class="title">' + a.name + '</div></div>';
       });
       document.getElementById('assignment-list').innerHTML = html;
     }
 
-    function openDetail(i) {
-      curAssign = i;
-      document.getElementById('detail-title').textContent = ASSIGNMENTS[i].name;
-      show('detail');
+    function openDetail(i) { curAssign = i; show('detail'); }
+
+    function renderSteps() {
+      const a = ASSIGNMENTS[curAssign];
+      document.getElementById('detail-title').textContent = a.name;
+      let html = '';
+      a.steps.forEach(function (s, si) {
+        html += '<div class="step"><b>' + s.title + '</b> ';
+        if (state.stepDone[curAssign][si]) {
+          html += '<button onclick="alert(1)">結果を見る</button>';
+        } else {
+          html += '<button onclick="startStep(' + si + ')">開始する</button>';
+        }
+        html += '</div>';
+      });
+      document.getElementById('step-list').innerHTML = html;
     }
 
-    function startQuiz() {
-      curQ = 0;
-      renderQuestion();
+    function startStep(si) {
+      curStep = si; curQ = 0;
       document.getElementById('grade-btn').style.display = 'none';
       document.getElementById('answer-btn').style.display = 'inline-block';
+      renderQuestion();
       show('quiz');
     }
 
     function renderQuestion() {
-      const q = ASSIGNMENTS[curAssign].questions[curQ];
-      let html = '<tui-section-question><h2 class="title">' + ASSIGNMENTS[curAssign].name + '</h2>';
+      const q = ASSIGNMENTS[curAssign].steps[curStep].questions[curQ];
+      let html = '<tui-section-question><h2 class="title">'
+        + ASSIGNMENTS[curAssign].name + '</h2>';
       html += '<tui-question-content><tui-rich-text><p>' + q.text + '</p></tui-rich-text>';
       html += '<tui-single-select-form>';
       q.choices.forEach(function (c, i) {
@@ -118,12 +151,11 @@
 
     function onAnswer() {
       const checked = document.querySelector('input[name=answer-option]:checked');
-      if (!checked) return;  // 未選択では進まない
+      if (!checked) return;
       curQ += 1;
-      if (curQ < ASSIGNMENTS[curAssign].questions.length) {
+      if (curQ < ASSIGNMENTS[curAssign].steps[curStep].questions.length) {
         renderQuestion();
       } else {
-        // 最後の問題を解き終わった → 「答え合わせへ」ボタンを出す
         document.getElementById('quiz-area').innerHTML = '<p>解答が完了しました</p>';
         document.getElementById('answer-btn').style.display = 'none';
         document.getElementById('grade-btn').style.display = 'inline-block';
@@ -132,9 +164,14 @@
 
     function goResult() { show('result'); }
 
-    function backToList() {
-      completed[curAssign] = true;  // この課題を完了にする
-      show('list');
+    function backToDetail() {
+      // このステップを完了にする。全ステップ完了なら課題も完了。
+      state.stepDone[curAssign][curStep] = true;
+      if (state.stepDone[curAssign].every(function (d) { return d; })) {
+        state.completed[curAssign] = true;
+      }
+      saveState();
+      show('detail');
     }
 
     renderList();
