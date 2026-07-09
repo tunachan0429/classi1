@@ -4,7 +4,7 @@
 ---------------------------------
 1. 指定URLの問題ページをブラウザで開く
 2. 問題エリア(表・図を含む)をスクリーンショット + テキスト抽出
-3. Gemini(無料枠)に解かせて ア/イ/ウ/エ のどれかを判定
+3. Gemini(無料枠)に解かせて ア/イ/ウ/エ を判定(複数穴埋め問題にも対応)
 4. 対応するラジオボタンにカーソルを動かしてクリック
 5. 結果をコンソールに表示
 
@@ -25,6 +25,13 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
 # 選択肢の記号 → ラジオの並び順(0始まり)の対応
 SYMBOLS = ["ア", "イ", "ウ", "エ"]
+
+# マークシート型の穴埋め問題で使う空欄ラベルの並び(ア,イ,ウ,…)
+KATA_SEQUENCE = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
+# 穴埋めの各空欄で選べる文字(符号と数字)
+FILLIN_OPTIONS = ["-", "±", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+# マイナスに見える各種文字を半角ハイフンに正規化する対象
+_MINUS_CHARS = "\u2212\uFF0D\u2010\u2011\u2013\u2014"
 
 
 # ------------------------------------------------------------
@@ -234,6 +241,217 @@ def nearest_question_text(form, question_selector):
         except Exception:
             continue
     return ""
+
+
+# ------------------------------------------------------------
+# マークシート型の複数穴埋め問題(各空欄に −/±/0-9 を選ぶ)
+# ------------------------------------------------------------
+def _normalize_option(s):
+    """選択肢テキストを正規化(各種マイナスを半角-に、前後空白除去)。"""
+    if not s:
+        return ""
+    s = s.strip()
+    for ch in _MINUS_CHARS:
+        s = s.replace(ch, "-")
+    return s
+
+
+def radio_groups(page):
+    """表示中のラジオを name 属性ごとにグループ化して、出現順に返す。
+
+    戻り値: [(name, [inputロケータ, ...]), ...]
+    (単一選択の4択は1グループ、マークシート型の穴埋めは複数グループになる)
+    """
+    radios = page.locator("input[type=radio]")
+    try:
+        n = radios.count()
+    except Exception:
+        return []
+    order = []
+    groups = {}
+    for i in range(n):
+        inp = radios.nth(i)
+        try:
+            if not inp.is_visible():
+                continue
+        except Exception:
+            continue
+        name = inp.get_attribute("name")
+        if not name:
+            name = f"__nameless_{i}"
+        if name not in groups:
+            groups[name] = []
+            order.append(name)
+        groups[name].append(inp)
+    return [(name, groups[name]) for name in order]
+
+
+def _radio_option_text(inp):
+    """1つのラジオが表す選択肢(−/±/0-9)を返す。"""
+    candidates = []
+    # 紐づくラベルのテキスト
+    try:
+        label = inp.locator("xpath=ancestor::label[1]")
+        if label.count() > 0:
+            candidates.append(label.first.inner_text() or "")
+    except Exception:
+        pass
+    # value 属性
+    try:
+        candidates.append(inp.get_attribute("value") or "")
+    except Exception:
+        pass
+    for c in candidates:
+        norm = _normalize_option(c)
+        if norm in FILLIN_OPTIONS:
+            return norm
+        # 複数文字が入っていても、最初に見つかる有効な1文字を拾う
+        for ch in norm:
+            if ch in FILLIN_OPTIONS:
+                return ch
+    return _normalize_option(candidates[0]) if candidates else ""
+
+
+def _blank_label(inp):
+    """ラジオが属する空欄のラベル(ア/イ/…)を、行のテキストから推定する。"""
+    try:
+        return inp.evaluate(
+            """
+            (el) => {
+              const KATA = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+              let node = el;
+              for (let up = 0; up < 6 && node; up++) {
+                const t = node.textContent || '';
+                for (const ch of t) { if (KATA.includes(ch)) return ch; }
+                node = node.parentElement;
+              }
+              return '';
+            }
+            """
+        ) or ""
+    except Exception:
+        return ""
+
+
+def extract_fillin_blanks(page):
+    """穴埋めの各空欄を出現順に返す。
+
+    戻り値: [{"label": "ア", "name": "...", "options": [{"text": "3", "input": loc}, ...]}]
+    label は行から推定した カタカナ。取れない場合は ア,イ,ウ… の並びで補完する。
+    """
+    groups = radio_groups(page)
+    blanks = []
+    for gi, (name, inputs) in enumerate(groups):
+        options = []
+        for inp in inputs:
+            options.append({"text": _radio_option_text(inp), "input": inp})
+        label = _blank_label(inputs[0]) if inputs else ""
+        if label not in KATA_SEQUENCE:
+            label = ""  # 推定失敗
+        blanks.append({"label": label, "name": name, "options": options})
+    # ラベルが取れなかった空欄は、出現順(ア,イ,ウ…)で補完する
+    for gi, b in enumerate(blanks):
+        if not b["label"] and gi < len(KATA_SEQUENCE):
+            b["label"] = KATA_SEQUENCE[gi]
+    return blanks
+
+
+def ask_gemini_fillin(client, model, image_bytes, question_text, labels):
+    """複数穴埋め問題を解かせ、{ラベル: 値} の辞書と生テキストを返す。"""
+    labels_str = ", ".join(labels)
+    prompt = f"""あなたは日本の数学・試験問題を解く専門家です。
+添付画像は「複数の空欄をうめる」マークシート型の問題です。画像を正確に読み取り、計算して解いてください。
+
+【設問テキスト(参考)】
+{question_text or "(画像を参照)"}
+
+【空欄】
+この問題の空欄は次の {len(labels)} 個です(この順番): {labels_str}
+各空欄には、次のいずれか【1文字】が入ります: -, ±, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+  ・ "-" は負の符号(マイナス)
+  ・ "±" はプラスマイナス
+  ・ 数字は 0〜9
+例: 係数が 32 なら、2桁の空欄は左から "3","2"。係数が -80 なら 符号の空欄が "-"、続く数字が "8","0"。
+
+【回答形式】
+必ず次のJSONだけを出力してください(前後に説明やコードブロック記号は不要):
+{{{', '.join(f'"{l}": "<1文字>"' for l in labels)}}}
+"""
+    contents = [
+        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+        prompt,
+    ]
+    resp = _generate_with_retry(client, model, contents)
+    text = (resp.text or "").strip()
+    answers = {}
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            for k, v in data.items():
+                answers[k] = _normalize_option(str(v))
+        except Exception:
+            pass
+    return answers, text
+
+
+def select_fillin(page, blanks, answers):
+    """各空欄について、Geminiの答えに一致するラジオをクリックする。
+
+    answers: {ラベル: 値}。ラベルで引けない場合は出現順で対応づける。
+    戻り値: 選択できた空欄数。
+    """
+    # 出現順のラベル一覧(Geminiが順番の配列で返したときのフォールバック用)
+    ordered_vals = list(answers.values())
+    picked = 0
+    for gi, b in enumerate(blanks):
+        val = answers.get(b["label"])
+        if val is None and gi < len(ordered_vals):
+            val = ordered_vals[gi]
+        val = _normalize_option(val or "")
+        if not val:
+            print(f"    空欄 {b['label']}: 解答が得られませんでした(スキップ)")
+            continue
+        # 値に一致するラジオを探す
+        target = None
+        for o in b["options"]:
+            if _normalize_option(o["text"]) == val:
+                target = o
+                break
+        if target is None:
+            print(f"    空欄 {b['label']}: 値「{val}」に対応する選択肢が見つかりません")
+            continue
+        label_el = target["input"].locator("xpath=ancestor::label[1]")
+        click_target = label_el if label_el.count() > 0 else target["input"]
+        move_and_click(page, click_target.first)
+        print(f"    空欄 {b['label']} = 「{val}」を選択")
+        picked += 1
+        time.sleep(0.15)
+    return picked
+
+
+def _wait_for_question(page, cfg):
+    """問題(解答欄)が表示されるのを待ち、種類を返す。
+
+    戻り値: 'single'(4択など) / 'fillin'(複数穴埋め) / None(見つからない)
+    """
+    deadline = time.time() + cfg["question_timeout"] / 1000.0
+    while time.time() < deadline:
+        groups = radio_groups(page)
+        # ラジオ群が複数 → マークシート型の複数穴埋め
+        if len(groups) >= 2:
+            return "fillin"
+        # 単一選択フォームが見えている → 4択など
+        if _loc_visible(page.locator(cfg["form_selector"])):
+            return "single"
+        if len(groups) == 1:
+            opts = [_radio_option_text(i) for i in groups[0][1]]
+            # 選択肢が数字・符号だけ(記号ア/イ…でない) → 1空欄の穴埋めとみなす
+            if any(o in FILLIN_OPTIONS for o in opts) and not any(o in SYMBOLS for o in opts):
+                return "fillin"
+            return "single"
+        time.sleep(0.4)
+    return None
 
 
 # ------------------------------------------------------------
@@ -694,14 +912,11 @@ def wait_for_next_question(page, cfg, old_sig):
 def solve_all_questions(page, client, cfg):
     results = []
     for qi in range(1, cfg["max_questions"] + 1):
-        # 現在の問題の解答欄が表示されるのを待つ
-        try:
-            page.wait_for_selector(
-                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
-            )
-        except PWTimeoutError:
+        # 現在の問題(解答欄)が出るのを待つ。単一選択でも複数穴埋めでも検出する
+        qtype = _wait_for_question(page, cfg)
+        if qtype is None:
             if qi == 1:
-                print(f"[エラー] 解答欄({cfg['form_selector']})が見つかりませんでした。")
+                print("[エラー] 解答欄が見つかりませんでした。")
                 if not cfg["auto_assignments"]:
                     print("        このURLがホーム画面など「問題ページではない」場合は、")
                     print("        .env で AUTO_ASSIGNMENTS=true にして課題を自動巡回してください。")
@@ -711,55 +926,87 @@ def solve_all_questions(page, client, cfg):
             break
 
         print(f"===== 設問 {qi} =====")
-        form = page.locator(cfg["form_selector"]).first
         sig = question_signature(page, cfg)
 
-        options = extract_options(form)
-        if not options:
-            print("  選択肢が取得できませんでした。終了します。")
-            break
-
-        q_text = nearest_question_text(form, cfg["question_selector"])
+        # 問題全体のスクショ(表・図を含めるため QUESTION_SELECTOR 範囲)
         shot_target = page.locator(cfg["question_selector"])
         if shot_target.count() == 0:
-            shot_target = form  # 見つからなければフォームだけ
+            shot_target = page.locator("body")
         img_bytes = shot_target.first.screenshot()
-
-        # Gemini に解かせる
-        print("  Geminiに問い合わせ中...")
         try:
-            answer, reason, raw = ask_gemini(client, cfg["model"], img_bytes, q_text, options)
-        except Exception as e:  # noqa: BLE001
-            print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
-            print("         時間をおいて再実行するか、.env の GEMINI_MODEL を")
-            print("         別のモデル(例: gemini-2.0-flash)に変えて試してください。")
-            break
+            q_text = (shot_target.first.inner_text() or "").strip()
+        except Exception:
+            q_text = ""
 
-        # 記号 → 対応するラジオを決める
-        target = None
-        if answer:
-            print(f"  → Geminiの解答: 【{answer}】  根拠: {reason or '(なし)'}")
-            for o in options:
-                if (o["symbol"] or SYMBOLS[o["index"]]) == answer:
-                    target = o
-                    break
-        if target is None:
-            # 判定不能/記号不一致でも、どんどん進めるため先頭を仮選択する
-            target = options[0]
-            shown = answer or "不明"
-            fallback_sym = target["symbol"] or SYMBOLS[target["index"]]
-            print(f"  [注意] 解答を確定できませんでした(Gemini: {shown})。仮に「{fallback_sym}」を選びます。")
-            results.append((qi, f"{shown}(仮選択)"))
+        if qtype == "fillin":
+            # ===== マークシート型の複数穴埋め(各空欄に −/±/0-9) =====
+            blanks = extract_fillin_blanks(page)
+            labels = [b["label"] for b in blanks]
+            print(f"  複数穴埋め問題を検出({len(blanks)}空欄: {', '.join(labels)})")
+            print("  Geminiに問い合わせ中...")
+            try:
+                answers, raw = ask_gemini_fillin(
+                    client, cfg["model"], img_bytes, q_text, labels
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
+                print("         時間をおいて再実行するか、GEMINI_MODEL を変えて試してください。")
+                break
+            if not answers:
+                print(f"  [判定不能] Geminiの返答: {raw[:120]}")
+                results.append((qi, "穴埋め:判定不能"))
+            else:
+                n_picked = select_fillin(page, blanks, answers)
+                summary = " ".join(
+                    f"{b['label']}={answers.get(b['label'], '?')}" for b in blanks
+                )
+                print(f"  ✓ {n_picked}/{len(blanks)} 個の空欄を選択  ({summary})")
+                results.append((qi, summary))
+            time.sleep(0.3)
         else:
-            results.append((qi, answer))
+            # ===== 4択などの単一選択 =====
+            form = page.locator(cfg["form_selector"]).first
+            options = extract_options(form)
+            if not options:
+                print("  選択肢が取得できませんでした。終了します。")
+                break
 
-        # ラジオを選択
-        label = target["input"].locator("xpath=ancestor::label[1]")
-        click_target = label if label.count() > 0 else target["input"]
-        move_and_click(page, click_target.first)
-        sym = target["symbol"] or SYMBOLS[target["index"]]
-        print(f"  ✓ 「{sym}」(value={target['value']}) を選択しました")
-        time.sleep(0.3)
+            print("  Geminiに問い合わせ中...")
+            try:
+                answer, reason, raw = ask_gemini(
+                    client, cfg["model"], img_bytes, q_text, options
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
+                print("         時間をおいて再実行するか、.env の GEMINI_MODEL を")
+                print("         別のモデル(例: gemini-2.0-flash)に変えて試してください。")
+                break
+
+            # 記号 → 対応するラジオを決める
+            target = None
+            if answer:
+                print(f"  → Geminiの解答: 【{answer}】  根拠: {reason or '(なし)'}")
+                for o in options:
+                    if (o["symbol"] or SYMBOLS[o["index"]]) == answer:
+                        target = o
+                        break
+            if target is None:
+                # 判定不能/記号不一致でも、どんどん進めるため先頭を仮選択する
+                target = options[0]
+                shown = answer or "不明"
+                fallback_sym = target["symbol"] or SYMBOLS[target["index"]]
+                print(f"  [注意] 解答を確定できませんでした(Gemini: {shown})。仮に「{fallback_sym}」を選びます。")
+                results.append((qi, f"{shown}(仮選択)"))
+            else:
+                results.append((qi, answer))
+
+            # ラジオを選択
+            label = target["input"].locator("xpath=ancestor::label[1]")
+            click_target = label if label.count() > 0 else target["input"]
+            move_and_click(page, click_target.first)
+            sym = target["symbol"] or SYMBOLS[target["index"]]
+            print(f"  ✓ 「{sym}」(value={target['value']}) を選択しました")
+            time.sleep(0.3)
 
         # 「回答」ボタンを押して次の問題へ
         btn = find_answer_button(page, cfg)

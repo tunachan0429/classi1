@@ -13,6 +13,7 @@ QUIZ_MULTI_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_multi.html"
 DIALOG_MOCK = pathlib.Path(__file__).parent / "mock" / "dialog.html"
 ABORT_BUTTONS_MOCK = pathlib.Path(__file__).parent / "mock" / "abort_buttons.html"
 FULL_FLOW_MOCK = pathlib.Path(__file__).parent / "mock" / "full_flow.html"
+FILLIN_MOCK = pathlib.Path(__file__).parent / "mock" / "fillin.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -245,6 +246,50 @@ def test_full_flow(browser):
     print(f"全自動フロー(マルチステップ) OK: {len(all_results)}課題, 各問題数={counts}")
 
 
+def test_fillin(browser):
+    """マークシート型の複数穴埋め(各空欄に −/±/0-9)を検出して全部選択できるか。"""
+    cfg = {
+        "url": FILLIN_MOCK.resolve().as_uri(),
+        "form_selector": "tui-single-select-form",  # 穴埋めには存在しない
+        "question_selector": "tui-section-question",
+        "answer_button_selector": "",
+        "next_selector": "",
+        "auto_next": False,
+        "max_questions": 5,
+        "question_timeout": 3000,
+        "model": "dummy",
+    }
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(cfg["url"])
+
+    # 1) 空欄抽出: ア/イ/ウ の3空欄、各12択(−,±,0-9)
+    blanks = solve.extract_fillin_blanks(page)
+    labels = [b["label"] for b in blanks]
+    assert labels == ["ア", "イ", "ウ"], f"空欄ラベル抽出失敗: {labels}"
+    assert all(len(b["options"]) == 12 for b in blanks), "各空欄は12択のはず"
+    opt_texts = [o["text"] for o in blanks[0]["options"]]
+    assert opt_texts == solve.FILLIN_OPTIONS, f"選択肢テキスト抽出失敗: {opt_texts}"
+    print(f"穴埋め抽出 OK: {labels} 各{len(blanks[0]['options'])}択")
+
+    # 2) Geminiをスタブして solve_all_questions を実行 → 各空欄が選択される
+    original = solve.ask_gemini_fillin
+    solve.ask_gemini_fillin = lambda client, model, img, qtext, lbls: (
+        {"ア": "3", "イ": "2", "ウ": "-"}, "raw"
+    )
+    try:
+        results = solve.solve_all_questions(page, None, cfg)
+    finally:
+        solve.ask_gemini_fillin = original
+
+    assert len(results) == 1, f"1問処理する想定だが {len(results)}: {results}"
+    assert page.locator("input[name=ans-a][value='3']").is_checked(), "アが3で選ばれていない"
+    assert page.locator("input[name=ans-b][value='2']").is_checked(), "イが2で選ばれていない"
+    assert page.locator("input[name=ans-c][value='-']").is_checked(), "ウが−で選ばれていない"
+    assert page.locator("#done").is_visible(), "回答後の完了表示が出ていない"
+    page.close()
+    print(f"穴埋め解答 OK: {results}")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -278,6 +323,11 @@ def main():
         # 0f) 全自動フロー(課題巡回)のテスト
         print("---- 全自動フローテスト ----")
         test_full_flow(browser)
+        print()
+
+        # 0g) マークシート型 複数穴埋めのテスト
+        print("---- 複数穴埋めテスト ----")
+        test_fillin(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})
