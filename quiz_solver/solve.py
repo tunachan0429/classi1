@@ -94,6 +94,10 @@ def load_config():
         "recommended_problem_selector": os.getenv("RECOMMENDED_PROBLEM_SELECTOR", "").strip(),
         # おすすめ演習の問題項目を見分ける文言(既定「練習問題」)
         "problem_item_text": os.getenv("PROBLEM_ITEM_TEXT", "練習問題").strip(),
+        # 「おすすめ演習」タブの文言(既定「おすすめ演習」)
+        "recommended_tab_text": os.getenv("RECOMMENDED_TAB_TEXT", "おすすめ演習").strip(),
+        # 単元アコーディオンを見分ける文言(既定「を解けるようになるため」)
+        "section_hint_text": os.getenv("SECTION_HINT_TEXT", "を解けるようになるため").strip(),
         # 解く問題数の上限(暴走防止のセーフティ)
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
@@ -1347,7 +1351,27 @@ def _dismiss_video_modal(page, cfg):
 
 
 def _click_first_recommended_problem(page, cfg):
-    """おすすめ演習の問題一覧から、一番上の問題を選んでクリックする。"""
+    """おすすめ演習の問題一覧から、一番上の問題を選んでクリックする。
+
+    画面に「おすすめ演習」タブがあれば先にそれを押し、
+    単元(アコーディオン)があれば先頭を展開してから、練習問題を選ぶ。
+    """
+    # 1) 「おすすめ演習」タブが見えていたら押す(タブ切り替え)
+    reco_tab_text = cfg.get("recommended_tab_text", "おすすめ演習")
+    try:
+        tab = page.get_by_text(reco_tab_text, exact=False)
+        if tab.count() > 0 and tab.first.is_visible():
+            move_and_click(page, tab.first)
+            print(f"  「{reco_tab_text}」タブを押します")
+            time.sleep(0.6)
+    except Exception:
+        pass
+
+    # 2) 単元のアコーディオン(展開できるカード)を開く
+    #    [人称代名詞] / [指示代名詞] 等の見出しがあれば先頭をクリックして展開
+    _expand_first_section(page, cfg)
+
+    # 3) 練習問題を見つけてクリック
     sel = cfg.get("recommended_problem_selector", "")
     if sel:
         loc = page.locator(sel)
@@ -1356,7 +1380,7 @@ def _click_first_recommended_problem(page, cfg):
             move_and_click(page, loc.first)
             return True
         return False
-    # ヒューリスティック: 「練習問題」等を含む個別項目(短めのテキスト)を上から探す
+
     key = cfg.get("problem_item_text", "練習問題")
     try:
         loc = page.get_by_text(key, exact=False)
@@ -1371,10 +1395,46 @@ def _click_first_recommended_problem(page, cfg):
             t = (el.inner_text() or "").strip()
         except Exception:
             continue
-        if key in t and len(t) < 60:  # 見出しではなく個別の問題名っぽいもの
-            print(f"  おすすめ演習の先頭の問題「{t[:30]}」を選びます")
+        if key in t and len(t) < 60:
+            print(f"  おすすめ演習の問題「{t[:30]}」を選びます")
             move_and_click(page, el)
             return True
+    return False
+
+
+def _expand_first_section(page, cfg):
+    """おすすめ演習のアコーディオン(単元カード)の先頭を開く。
+
+    [人称代名詞] / [指示代名詞] 等の見出しカードが折りたたまれている場合、
+    先頭をクリックして中の練習問題一覧を表示させる。
+    """
+    section_hint = cfg.get("section_hint_text", "を解けるようになるため")
+    try:
+        sections = page.get_by_text(section_hint, exact=False)
+        n = sections.count()
+    except Exception:
+        n = 0
+    for i in range(min(n, 20)):
+        el = sections.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+        except Exception:
+            continue
+        move_and_click(page, el)
+        print("  単元カードを展開します")
+        time.sleep(0.5)
+        return True
+    # 代替: 「▽」矢印や details/summary があれば開く
+    try:
+        arrows = page.locator("[aria-expanded='false'], details:not([open]), .accordion:not(.open)")
+        if arrows.count() > 0 and arrows.first.is_visible():
+            move_and_click(page, arrows.first)
+            print("  アコーディオンを展開します")
+            time.sleep(0.5)
+            return True
+    except Exception:
+        pass
     return False
 
 
