@@ -12,6 +12,7 @@ QUIZ_GUARDED_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_guarded.html"
 QUIZ_MULTI_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_multi.html"
 DIALOG_MOCK = pathlib.Path(__file__).parent / "mock" / "dialog.html"
 ABORT_BUTTONS_MOCK = pathlib.Path(__file__).parent / "mock" / "abort_buttons.html"
+FULL_FLOW_MOCK = pathlib.Path(__file__).parent / "mock" / "full_flow.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -202,6 +203,43 @@ def test_abort_button_avoidance(browser):
     print("中断モーダルのキャンセル OK")
 
 
+def test_full_flow(browser):
+    """ホーム→学習トレーニング→課題→課題選択→開始→解答→答え合わせ→次の課題 を巡回できるか。"""
+    cfg = {
+        "url": FULL_FLOW_MOCK.resolve().as_uri(),
+        "form_selector": "tui-single-select-form",
+        "question_selector": "tui-section-question",
+        "answer_button_selector": "",
+        "next_selector": "",
+        "auto_next": False,
+        "max_questions": 50,
+        "question_timeout": 4000,
+        "model": "dummy",
+        # 巡回用
+        "training_text": "学習トレーニング",
+        "assignment_menu_text": "課題",
+        "start_text": "開始する",
+        "grading_text": "答え合わせ",
+        "back_to_list_text": "課題詳細画面へ",
+        "assignment_selector": ".assignment",
+        "incomplete_text": "未完了",
+        "max_assignments": 10,
+    }
+    original = solve.ask_gemini
+    solve.ask_gemini = lambda client, model, img, qtext, options: ("ア", "テスト用", "ア")
+    try:
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(cfg["url"])
+        all_results = solve.run_assignments(page, None, cfg)
+        assert len(all_results) == 2, f"2課題を処理する想定だが {len(all_results)} 件: {all_results}"
+        for title, results in all_results:
+            assert len(results) == 2, f"各課題2問の想定だが {title} は {len(results)} 問"
+        page.close()
+    finally:
+        solve.ask_gemini = original
+    print(f"全自動フロー OK: {len(all_results)}課題を巡回して解答")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -230,6 +268,11 @@ def main():
         # 0e) 中断ボタン回避・中断モーダルのテスト
         print("---- 中断ボタン回避テスト ----")
         test_abort_button_avoidance(browser)
+        print()
+
+        # 0f) 全自動フロー(課題巡回)のテスト
+        print("---- 全自動フローテスト ----")
+        test_full_flow(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})

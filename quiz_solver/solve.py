@@ -37,6 +37,8 @@ def load_config():
     parser.add_argument("--headless", action="store_true", help="ブラウザを表示しない")
     parser.add_argument("--no-submit", action="store_true", help="採点ボタンを押さない")
     parser.add_argument("--max", type=int, help="解く問題の最大数 (.envのMAX_QUESTIONSより優先)")
+    parser.add_argument("--auto-assignments", action="store_true",
+                        help="ホーム→学習トレーニング→課題…と課題を自動で巡回する")
     args = parser.parse_args()
 
     cfg = {
@@ -61,6 +63,20 @@ def load_config():
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
         "question_timeout": int(os.getenv("QUESTION_TIMEOUT_MS", "20000")),
+        # ===== 課題を自動で巡回するモード =====
+        "auto_assignments": args.auto_assignments or os.getenv("AUTO_ASSIGNMENTS", "false").lower() == "true",
+        # 巡回で使う各ボタンの文言(サイトに合わせて変更可)
+        "training_text": os.getenv("TRAINING_TEXT", "学習トレーニング").strip(),
+        "assignment_menu_text": os.getenv("ASSIGNMENT_MENU_TEXT", "課題").strip(),
+        "start_text": os.getenv("START_TEXT", "開始する").strip(),
+        "grading_text": os.getenv("GRADING_TEXT", "答え合わせ").strip(),
+        "back_to_list_text": os.getenv("BACK_TO_LIST_TEXT", "課題詳細画面へ").strip(),
+        # 課題一覧の各項目のセレクタ(空なら未完了バッジから自動推定)
+        "assignment_selector": os.getenv("ASSIGNMENT_SELECTOR", "").strip(),
+        # 未完了を表す文言(この文言を含む項目を「これから解く課題」とみなす)
+        "incomplete_text": os.getenv("INCOMPLETE_TEXT", "未完了").strip(),
+        # 巡回する課題数の上限(暴走防止)
+        "max_assignments": int(os.getenv("MAX_ASSIGNMENTS", "50")),
         # --- ログイン設定(自分のサイト用。空なら未使用) ---
         "login_url": os.getenv("LOGIN_URL", "").strip(),
         "login_user": os.getenv("LOGIN_USER", ""),
@@ -751,6 +767,179 @@ def solve_all_questions(page, client, cfg):
 
 
 # ------------------------------------------------------------
+# 課題を自動で巡回する(ホーム→学習トレーニング→課題→…)
+# ------------------------------------------------------------
+def click_text(page, text, timeout_ms=15000, optional=False):
+    """画面上の指定文言のボタン/リンクをクリックする。
+
+    クリック可能な要素(button/a等)を優先。見つからなければ、その文言を持つ
+    表示中の要素を直接クリックする。optional=Falseで見つからなければ例外。
+    """
+    if not text:
+        return False
+    deadline = time.time() + timeout_ms / 1000.0
+    while time.time() < deadline:
+        btn = _find_button(page, "", [text])
+        if btn is not None:
+            print(f"  「{text}」をクリックします")
+            move_and_click(page, btn)
+            return True
+        try:
+            loc = page.get_by_text(text, exact=False)
+            if _loc_visible(loc):
+                print(f"  「{text}」をクリックします")
+                move_and_click(page, loc.first)
+                return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    if optional:
+        return False
+    raise RuntimeError(f"「{text}」が見つかりませんでした")
+
+
+def _assignment_locators(page, cfg):
+    """課題一覧の各項目のロケータ(複数)を返す。"""
+    if cfg["assignment_selector"]:
+        return page.locator(cfg["assignment_selector"])
+    # セレクタ未指定: 「未完了」等を含むクリック可能なカードを推定
+    inc = cfg["incomplete_text"]
+    xp = (
+        f"xpath=//a[contains(normalize-space(.),'{inc}')] "
+        f"| //*[@onclick][contains(normalize-space(.),'{inc}')] "
+        f"| //*[contains(@class,'assignment') or contains(@class,'card') "
+        f"or contains(@class,'task') or contains(@class,'kadai')]"
+        f"[contains(normalize-space(.),'{inc}')]"
+    )
+    return page.locator(xp)
+
+
+def _assignment_list_present(page, cfg):
+    """今、課題一覧の画面にいるか(課題項目が見えているか)。"""
+    if cfg["assignment_selector"]:
+        return _loc_visible(page.locator(cfg["assignment_selector"]))
+    try:
+        body = page.locator("body").inner_text(timeout=800) or ""
+    except Exception:
+        return False
+    return cfg["incomplete_text"] in body
+
+
+def find_next_incomplete_assignment(page, cfg):
+    """未完了の課題を上から探して (要素, タイトル文字列) で返す。無ければ (None, None)。"""
+    inc = cfg["incomplete_text"]
+    loc = _assignment_locators(page, cfg)
+    try:
+        n = loc.count()
+    except Exception:
+        n = 0
+    for i in range(min(n, 100)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            txt = el.inner_text() or ""
+        except Exception:
+            continue
+        if inc in txt:
+            return el, txt.replace("\n", " ").strip()
+    return None, None
+
+
+def go_to_assignment_list(page, cfg):
+    """(再)課題一覧まで移動する。すでに一覧にいれば何もしない。"""
+    if _assignment_list_present(page, cfg):
+        return True
+    # 保存済みの一覧URLがあれば開く(複数ページ型サイト向け)
+    if cfg.get("_list_url"):
+        try:
+            page.goto(cfg["_list_url"], wait_until="networkidle", timeout=60000)
+            install_cursor(page)
+            if _assignment_list_present(page, cfg):
+                return True
+        except Exception:
+            pass
+    # クリックでたどる: 学習トレーニング → 課題
+    click_text(page, cfg["training_text"], optional=True)
+    time.sleep(0.5)
+    click_text(page, cfg["assignment_menu_text"], optional=True)
+    time.sleep(0.5)
+    if _assignment_list_present(page, cfg):
+        cfg["_list_url"] = page.url
+        return True
+    return False
+
+
+def run_assignments(page, client, cfg):
+    """課題一覧から未完了の課題を順に開いて解き、次の課題へ進むのを繰り返す。"""
+    print("[自動巡回] 課題を上から順に解いていきます\n")
+    if not go_to_assignment_list(page, cfg):
+        print("[エラー] 課題一覧にたどり着けませんでした。")
+        print("        .env の TRAINING_TEXT / ASSIGNMENT_MENU_TEXT / ASSIGNMENT_SELECTOR を確認してください。")
+        return []
+
+    all_results = []
+    seen = set()
+    for a in range(1, cfg["max_assignments"] + 1):
+        if not go_to_assignment_list(page, cfg):
+            print("課題一覧に戻れませんでした。終了します。")
+            break
+
+        el, title = find_next_incomplete_assignment(page, cfg)
+        if el is None:
+            print("\n未完了の課題が見つかりませんでした。全課題を処理したとみなして終了します。")
+            break
+
+        key = (title or "")[:80]
+        if key in seen:
+            print(f"\n課題「{key}」が完了扱いにならず繰り返しています。ここで終了します。")
+            break
+        seen.add(key)
+
+        print(f"\n########## 課題 {a}: {key} ##########")
+        move_and_click(page, el)
+        time.sleep(0.6)
+
+        # 「開始する」を押す
+        if not click_text(page, cfg["start_text"], optional=True):
+            print("  [注意] 「開始する」が見つかりませんでした。次の課題へ移ります。")
+            continue
+        time.sleep(0.6)
+
+        # 解答欄が出るまで待つ
+        try:
+            page.wait_for_selector(
+                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
+            )
+        except PWTimeoutError:
+            print("  [注意] 問題が表示されませんでした。次の課題へ移ります。")
+            continue
+
+        # 全問を解く
+        results = solve_all_questions(page, client, cfg)
+        all_results.append((key, results))
+
+        # 「答え合わせへ」→「課題詳細画面へ」を押して一覧へ戻る
+        dismiss_abort_modal(page)
+        click_text(page, cfg["grading_text"], optional=True)
+        time.sleep(0.6)
+        dismiss_abort_modal(page)
+        click_text(page, cfg["back_to_list_text"], optional=True)
+        time.sleep(0.6)
+        dismiss_abort_modal(page)
+
+    # サマリ
+    print("\n========== 全課題の結果 ==========")
+    print(f"  処理した課題数: {len(all_results)}")
+    for title, results in all_results:
+        print(f"  ● {title}  ({len(results)}問)")
+        for num, ans in results:
+            print(f"      設問{num}: {ans}")
+    print("==================================")
+    return all_results
+
+
+# ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
 def run(cfg):
@@ -779,23 +968,27 @@ def run(cfg):
             browser.close()
             return
 
-        # 全問を「解く→選択→回答→次へ」で順番に処理する
-        results = solve_all_questions(page, client, cfg)
+        if cfg["auto_assignments"]:
+            # 課題一覧から未完了の課題を順に開いて、全部解く
+            run_assignments(page, client, cfg)
+        else:
+            # 単一の問題ページを「解く→選択→回答→次へ」で処理する
+            results = solve_all_questions(page, client, cfg)
 
-        # 最後に採点/送信ボタン(設定されていて、表示されていれば)
-        if cfg["submit_selector"]:
-            btn = page.locator(cfg["submit_selector"])
-            if _loc_visible(btn):
-                print(f"[送信] {cfg['submit_selector']} をクリックします")
-                move_and_click(page, btn.first)
-                time.sleep(1.5)
+            # 最後に採点/送信ボタン(設定されていて、表示されていれば)
+            if cfg["submit_selector"]:
+                btn = page.locator(cfg["submit_selector"])
+                if _loc_visible(btn):
+                    print(f"[送信] {cfg['submit_selector']} をクリックします")
+                    move_and_click(page, btn.first)
+                    time.sleep(1.5)
 
-        # サマリ
-        print("\n========== 結果一覧 ==========")
-        print(f"  解いた問題数: {len(results)}")
-        for num, ans in results:
-            print(f"  設問{num}: {ans}")
-        print("==============================")
+            # サマリ
+            print("\n========== 結果一覧 ==========")
+            print(f"  解いた問題数: {len(results)}")
+            for num, ans in results:
+                print(f"  設問{num}: {ans}")
+            print("==============================")
 
         if not cfg["headless"]:
             print("\n確認できたら Enter キーでブラウザを閉じます...")

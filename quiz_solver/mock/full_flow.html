@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 全自動フロー</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .assignment { border: 1px solid #ccc; padding: 12px; margin: 8px 0; cursor: pointer; }
+    .status { color: #c00; font-weight: bold; }
+    .status.done { color: #090; }
+    .symbol { font-weight: bold; margin-right: 8px; }
+    button { margin: 8px 0; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <!-- ホーム -->
+  <div id="home" class="screen active">
+    <h1>ホーム</h1>
+    <button onclick="show('training')">学習トレーニング</button>
+    <button>Webテスト</button>
+  </div>
+
+  <!-- 学習トレーニング -->
+  <div id="training" class="screen">
+    <h1>学習トレーニング</h1>
+    <h2>課題学習</h2>
+    <button onclick="show('list')">課題</button>
+  </div>
+
+  <!-- 課題一覧 -->
+  <div id="list" class="screen">
+    <h1>課題一覧</h1>
+    <div id="assignment-list"></div>
+  </div>
+
+  <!-- 課題詳細(開始する) -->
+  <div id="detail" class="screen">
+    <h1 id="detail-title"></h1>
+    <p>学習の内容</p>
+    <button onclick="startQuiz()">開始する</button>
+    <button onclick="show('list')">課題を中断する</button>
+  </div>
+
+  <!-- 問題 -->
+  <div id="quiz" class="screen">
+    <div id="quiz-area"></div>
+    <button id="answer-btn" onclick="onAnswer()">回答</button>
+    <button id="grade-btn" style="display:none" onclick="goResult()">答え合わせへ</button>
+  </div>
+
+  <!-- 結果(課題詳細画面へ) -->
+  <div id="result" class="screen">
+    <h1>結果</h1>
+    <p>すべての問題に解答済みです</p>
+    <button onclick="backToList()">課題詳細画面へ</button>
+  </div>
+
+  <script>
+    // 2つの課題。それぞれ2問。
+    const ASSIGNMENTS = [
+      { name: "[英語] 課題A", questions: [
+          { text: "1+1は？", choices: ["1", "2", "3", "4"] },
+          { text: "2+2は？", choices: ["3", "4", "5", "6"] } ] },
+      { name: "[英語] 課題B", questions: [
+          { text: "3+3は？", choices: ["5", "6", "7", "8"] },
+          { text: "4+4は？", choices: ["7", "8", "9", "10"] } ] },
+    ];
+    const SYMBOLS = ["ア", "イ", "ウ", "エ"];
+    const completed = [false, false];
+    let curAssign = -1;
+    let curQ = 0;
+
+    function show(id) {
+      document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById(id).classList.add('active');
+      if (id === 'list') renderList();
+    }
+
+    function renderList() {
+      let html = '';
+      ASSIGNMENTS.forEach(function (a, i) {
+        const st = completed[i] ? '<span class="status done">完了</span>' : '<span class="status">未完了</span>';
+        html += '<div class="assignment" onclick="openDetail(' + i + ')">'
+             +  st + '<div class="title">' + a.name + '</div>'
+             +  '<div>解答目安時間: 5分 (' + a.questions.length + '問)</div></div>';
+      });
+      document.getElementById('assignment-list').innerHTML = html;
+    }
+
+    function openDetail(i) {
+      curAssign = i;
+      document.getElementById('detail-title').textContent = ASSIGNMENTS[i].name;
+      show('detail');
+    }
+
+    function startQuiz() {
+      curQ = 0;
+      renderQuestion();
+      document.getElementById('grade-btn').style.display = 'none';
+      document.getElementById('answer-btn').style.display = 'inline-block';
+      show('quiz');
+    }
+
+    function renderQuestion() {
+      const q = ASSIGNMENTS[curAssign].questions[curQ];
+      let html = '<tui-section-question><h2 class="title">' + ASSIGNMENTS[curAssign].name + '</h2>';
+      html += '<tui-question-content><tui-rich-text><p>' + q.text + '</p></tui-rich-text>';
+      html += '<tui-single-select-form>';
+      q.choices.forEach(function (c, i) {
+        html += '<label><input type="radio" name="answer-option" value="SINGLE_SELECT_' + i + '">'
+             +  '<span class="symbol">' + SYMBOLS[i] + '</span><span>' + c + '</span></label>';
+      });
+      html += '</tui-single-select-form></tui-question-content></tui-section-question>';
+      document.getElementById('quiz-area').innerHTML = html;
+    }
+
+    function onAnswer() {
+      const checked = document.querySelector('input[name=answer-option]:checked');
+      if (!checked) return;  // 未選択では進まない
+      curQ += 1;
+      if (curQ < ASSIGNMENTS[curAssign].questions.length) {
+        renderQuestion();
+      } else {
+        // 最後の問題を解き終わった → 「答え合わせへ」ボタンを出す
+        document.getElementById('quiz-area').innerHTML = '<p>解答が完了しました</p>';
+        document.getElementById('answer-btn').style.display = 'none';
+        document.getElementById('grade-btn').style.display = 'inline-block';
+      }
+    }
+
+    function goResult() { show('result'); }
+
+    function backToList() {
+      completed[curAssign] = true;  // この課題を完了にする
+      show('list');
+    }
+
+    renderList();
+  </script>
+</body>
+</html>
