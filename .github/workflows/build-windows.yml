@@ -65,14 +65,9 @@ jobs:
           ※ 初回はWindowsの警告が出ることがあります(詳細情報→実行)。
           "@ | Out-File -FilePath "$out/はじめにお読みください.txt" -Encoding utf8
 
-      - name: zip にまとめる
-        working-directory: quiz_solver
-        shell: pwsh
-        run: Compress-Archive -Path "dist/quiz-solver/*" -DestinationPath "classi1-quiz-solver-windows.zip" -Force
-
-      - name: 成果物(zip)をアップロード
+      - name: 成果物をアップロード(フォルダごと。ダウンロード後は1回の解凍でOK)
         uses: actions/upload-artifact@v4
         with:
           name: classi1-quiz-solver-windows
-          path: quiz_solver/classi1-quiz-solver-windows.zip
+          path: quiz_solver/dist/quiz-solver
           retention-days: 30
