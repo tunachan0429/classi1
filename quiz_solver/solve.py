@@ -1320,6 +1320,23 @@ def _back_to_steps(page, cfg):
     return True
 
 
+def _find_start_button(page, cfg, wait_ms):
+    """課題詳細画面の「開始する」ボタンを、最大 wait_ms ミリ秒まで待って探す。
+
+    テストを解いた直後は、結果反映で「おすすめ演習」等の開始するボタンが
+    少し遅れて出ることがあるため、すぐ諦めずにポーリングして待つ。
+    """
+    deadline = time.time() + wait_ms / 1000.0
+    while True:
+        dismiss_abort_modal(page)
+        btn = _find_button(page, "", [cfg["start_text"]])
+        if btn is not None:
+            return btn
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
 def solve_one_assignment(page, client, cfg):
     """課題詳細画面で、未完了のステップ(「開始する」)が無くなるまで順に全部解く。
 
@@ -1328,17 +1345,19 @@ def solve_one_assignment(page, client, cfg):
     """
     results = []
     for step in range(1, cfg["max_steps"] + 1):
-        time.sleep(0.4)
         dismiss_abort_modal(page)
 
-        # 未完了ステップの「開始する」を探す(無ければ全ステップ完了)
-        start_btn = _find_button(page, "", [cfg["start_text"]])
+        # 未完了ステップの「開始する」を探す。
+        #  1ステップ目はすぐ見えるはず。2ステップ目以降(おすすめ演習など)は
+        #  結果反映で遅れて出ることがあるので、数秒待ってから探す。
+        wait_ms = 4000 if step == 1 else 8000
+        start_btn = _find_start_button(page, cfg, wait_ms)
         if start_btn is None:
             if step == 1:
                 print("  [注意] このページに「開始する」が見つかりませんでした。")
                 print("         .env の START_TEXT を確認してください。")
             else:
-                print("  この課題のステップはすべて完了しました。")
+                print("  ✓ この課題の全ステップが完了しました(「開始する」がもうありません)。")
             break
 
         print(f"  --- ステップ {step}: 「{cfg['start_text']}」を押します ---")
