@@ -67,9 +67,25 @@ LOGIN_PASS=あなたのパスワード
 | `LOGIN_USER_SELECTOR` | ユーザー名の入力欄 | `input[name=username]` |
 | `LOGIN_PASS_SELECTOR` | パスワードの入力欄 | `input[type=password]` |
 | `LOGIN_BUTTON_SELECTOR` | ログインボタン | `button[type=submit]` |
+| `LOGIN_NEXT_SELECTOR` | 【2段階ログイン用】ユーザー名の後に押す「次へ」ボタン（任意） | （空） |
 | `LOGIN_SUCCESS_SELECTOR` | ログイン後だけ現れる要素（成功確認用。任意） | （空＝確認しない） |
 
 > `LOGIN_SUCCESS_SELECTOR` を設定しておくと、ログインに失敗したとき（パスワード違いなど）にその場で気づけるのでおすすめです。
+
+### 2段階ログイン（ユーザー名 → 次へ → パスワード）のサイト
+
+「ユーザー名を入れて『次へ』を押すと、あとからパスワード欄が出てくる」タイプのサイト
+（Angular製のログイン画面などによくあります）にも対応しています。
+
+- 基本は **設定なしでも自動対応**します（ユーザー名入力後、パスワード欄が見えなければ自動で「次へ」に相当するボタンを押し、パスワード欄が表示されるまで待ってから入力します）。
+- うまく進まない場合は、`LOGIN_NEXT_SELECTOR` に「次へ」ボタンのセレクタを指定してください。
+
+```
+LOGIN_NEXT_SELECTOR=button[type=submit]   （例。実際の「次へ」ボタンに合わせて）
+```
+
+> 以前出ていた `Page.fill: Timeout ... input[type=password] ... element is not visible` は、
+> この2段階ログイン（パスワード欄が最初は非表示）が原因でした。上記の対応で解消します。
 
 > ⚠️ `.env` にはパスワードが平文で入ります。`.env` は `.gitignore` 済みで共有されませんが、PCの取り扱いには注意してください。**このログイン機能は自分自身のサイト／アカウント用です。**
 

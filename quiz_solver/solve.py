@@ -55,6 +55,8 @@ def load_config():
         "login_user_selector": os.getenv("LOGIN_USER_SELECTOR", "input[name=username]").strip(),
         "login_pass_selector": os.getenv("LOGIN_PASS_SELECTOR", "input[type=password]").strip(),
         "login_button_selector": os.getenv("LOGIN_BUTTON_SELECTOR", "button[type=submit]").strip(),
+        # 2段階ログイン用: ユーザー名を入れた後に押す「次へ」ボタン(任意)
+        "login_next_selector": os.getenv("LOGIN_NEXT_SELECTOR", "").strip(),
         "login_success_selector": os.getenv("LOGIN_SUCCESS_SELECTOR", "").strip(),
     }
     # ログインを使うかどうか(URL・ユーザー・パスワードが揃っていれば有効)
@@ -234,10 +236,51 @@ def move_and_click(page, target_locator):
 # ------------------------------------------------------------
 # 自分のサイトへログインする
 # ------------------------------------------------------------
+def _first_visible(page, selector):
+    """selector に一致する要素が1つ以上あり、先頭が実際に表示されているか。"""
+    if not selector:
+        return False
+    loc = page.locator(selector)
+    try:
+        return loc.count() > 0 and loc.first.is_visible()
+    except Exception:
+        return False
+
+
+def _advance_to_password(page, cfg):
+    """2段階ログイン用: ユーザー名の次画面(パスワード欄)へ進める。
+
+    1) LOGIN_NEXT_SELECTOR が指定されていればそのボタンを押す
+    2) 指定がなければ、表示中のログインボタン(=この時点では「次へ」兼用)を押す
+    3) それも無ければユーザー名欄で Enter を押す
+    """
+    if cfg["login_next_selector"]:
+        nb = page.locator(cfg["login_next_selector"])
+        if nb.count() > 0:
+            print("  [2段階] 「次へ」ボタンを押してパスワード欄を表示します")
+            move_and_click(page, nb.first)
+            return
+        print(f"  [注意] LOGIN_NEXT_SELECTOR({cfg['login_next_selector']})が見つかりませんでした。別の方法を試します。")
+
+    btn = page.locator(cfg["login_button_selector"])
+    if btn.count() > 0 and _first_visible(page, cfg["login_button_selector"]):
+        print("  [2段階] ログインボタンを押してパスワード欄を表示します")
+        move_and_click(page, btn.first)
+        return
+
+    # 最後の手段: ユーザー名欄で Enter
+    try:
+        print("  [2段階] ユーザー名欄で Enter を押してパスワード欄を表示します")
+        page.press(cfg["login_user_selector"], "Enter")
+    except Exception:
+        pass
+
+
 def login(page, cfg):
     """LOGIN_URL を開き、ユーザー名・パスワードを入力してログインする。
 
     ログイン設定(URL・ユーザー・パスワード)が揃っていない場合は何もしない。
+    ユーザー名の後にパスワード欄が出てくる「2段階ログイン」にも対応する。
     成功可否は LOGIN_SUCCESS_SELECTOR が指定されていればそれで確認する。
     """
     if not cfg["use_login"]:
@@ -247,22 +290,33 @@ def login(page, cfg):
     page.goto(cfg["login_url"], wait_until="networkidle", timeout=60000)
     install_cursor(page)
 
-    # ユーザー名
+    # ユーザー名(表示されるのを待ってから入力)
     try:
-        page.wait_for_selector(cfg["login_user_selector"], timeout=15000)
+        page.wait_for_selector(cfg["login_user_selector"], state="visible", timeout=15000)
         page.fill(cfg["login_user_selector"], cfg["login_user"])
     except PWTimeoutError:
         print(f"  [エラー] ユーザー名入力欄({cfg['login_user_selector']})が見つかりませんでした。")
         print("          .env の LOGIN_USER_SELECTOR を確認してください。")
         raise
 
-    # パスワード
+    pass_sel = cfg["login_pass_selector"]
+
+    # パスワード欄がまだ表示されていなければ、「次へ」を押して出す(2段階ログイン)
+    if not _first_visible(page, pass_sel):
+        _advance_to_password(page, cfg)
+
+    # パスワード欄が「表示される」まで待つ(DOMにあっても非表示なら入力できないため)
     try:
-        page.fill(cfg["login_pass_selector"], cfg["login_pass"])
+        page.wait_for_selector(pass_sel, state="visible", timeout=20000)
     except PWTimeoutError:
-        print(f"  [エラー] パスワード入力欄({cfg['login_pass_selector']})が見つかりませんでした。")
-        print("          .env の LOGIN_PASS_SELECTOR を確認してください。")
+        print(f"  [エラー] パスワード入力欄({pass_sel})が表示されませんでした。")
+        print("          2段階ログインの場合は .env の LOGIN_NEXT_SELECTOR に")
+        print("          「次へ」ボタンのセレクタを設定してください。")
+        print("          また LOGIN_PASS_SELECTOR が正しいかも確認してください。")
         raise
+
+    # パスワード
+    page.fill(pass_sel, cfg["login_pass"])
 
     # ログインボタン → 遷移待ち
     btn = page.locator(cfg["login_button_selector"])

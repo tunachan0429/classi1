@@ -6,19 +6,21 @@ import solve
 
 MOCK = pathlib.Path(__file__).parent / "mock" / "quiz.html"
 LOGIN_MOCK = pathlib.Path(__file__).parent / "mock" / "login.html"
+LOGIN_2STEP_MOCK = pathlib.Path(__file__).parent / "mock" / "login_2step.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
-def make_login_cfg(user, password):
+def make_login_cfg(user, password, url=None, next_selector=""):
     """login() に渡すための最小限の設定を組み立てる。"""
     return {
         "use_login": True,
-        "login_url": LOGIN_MOCK.resolve().as_uri(),
+        "login_url": (url or LOGIN_MOCK).resolve().as_uri(),
         "login_user": user,
         "login_pass": password,
         "login_user_selector": "input[name=username]",
         "login_pass_selector": "input[type=password]",
         "login_button_selector": "button[type=submit]",
+        "login_next_selector": next_selector,
         "login_success_selector": "#dashboard",
     }
 
@@ -48,6 +50,24 @@ def test_login(browser):
     solve.login(page, {"use_login": False})
     page.close()
     print("ログイン未設定ケース OK (スキップ)")
+
+    # 4) 2段階ログイン(パスワード欄が最初は非表示) → 「次へ」を押して成功
+    #    next_selector を指定せず、ログインボタン兼用でパスワード欄を出せることを確認
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.login(page, make_login_cfg("testuser", "testpass", url=LOGIN_2STEP_MOCK))
+    assert page.locator("#dashboard").count() == 1, "2段階ログイン後の目印が出ていない"
+    page.close()
+    print("2段階ログイン(自動検出)ケース OK")
+
+    # 5) 2段階ログイン + LOGIN_NEXT_SELECTOR を明示指定 → 成功
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.login(
+        page,
+        make_login_cfg("testuser", "testpass", url=LOGIN_2STEP_MOCK, next_selector="#submit-btn"),
+    )
+    assert page.locator("#dashboard").count() == 1, "2段階ログイン(明示next)後の目印が出ていない"
+    page.close()
+    print("2段階ログイン(next明示)ケース OK")
 
 
 def main():
