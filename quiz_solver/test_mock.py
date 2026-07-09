@@ -11,6 +11,7 @@ LOGIN_ENTER_MOCK = pathlib.Path(__file__).parent / "mock" / "login_enter.html"
 QUIZ_GUARDED_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_guarded.html"
 QUIZ_MULTI_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_multi.html"
 DIALOG_MOCK = pathlib.Path(__file__).parent / "mock" / "dialog.html"
+ABORT_BUTTONS_MOCK = pathlib.Path(__file__).parent / "mock" / "abort_buttons.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -171,6 +172,36 @@ def test_dialog_handler(browser):
     print("ダイアログ dismiss ケース OK (自動でキャンセルを押した)")
 
 
+def test_abort_button_avoidance(browser):
+    """「解答を中断する」ボタンを避けて「次へ」を押せるか + 中断モーダルを閉じられるか。"""
+    url = ABORT_BUTTONS_MOCK.resolve().as_uri()
+
+    # 1) find_answer_button は「中断」ではなく「次へ」を選ぶ
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(url)
+    btn = solve.find_answer_button(page, {"answer_button_selector": ""})
+    assert btn is not None, "ボタンが見つからない"
+    btn.click()
+    assert page.evaluate("() => window.__nextClicked === true"), "「次へ」が押されていない"
+    assert not page.evaluate("() => window.__aborted === true"), "「中断」を押してしまった"
+    # 中断モーダルは出ていないはず
+    assert not page.locator("#modal").is_visible(), "中断モーダルが出てしまった"
+    page.close()
+    print("中断ボタン回避 OK (「次へ」を正しく選択)")
+
+    # 2) 中断モーダルが出ている場合は dismiss_abort_modal がキャンセルを押して閉じる
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(url)
+    page.click("#abort")  # わざと中断モーダルを出す
+    assert page.locator("#modal").is_visible(), "前提: モーダルが出ている"
+    closed = solve.dismiss_abort_modal(page)
+    assert closed, "モーダルを閉じられなかった"
+    assert page.evaluate("() => window.__cancelled === true"), "キャンセルが押されていない"
+    assert not page.locator("#modal").is_visible(), "モーダルが閉じていない"
+    page.close()
+    print("中断モーダルのキャンセル OK")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -194,6 +225,11 @@ def main():
         # 0d) 確認ダイアログ自動処理のテスト
         print("---- 確認ダイアログテスト ----")
         test_dialog_handler(browser)
+        print()
+
+        # 0e) 中断ボタン回避・中断モーダルのテスト
+        print("---- 中断ボタン回避テスト ----")
+        test_abort_button_avoidance(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})

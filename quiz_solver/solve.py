@@ -484,7 +484,13 @@ def open_quiz_page(page, cfg):
 # 「回答」ボタン・「次へ」ボタンを探す
 # ------------------------------------------------------------
 ANSWER_BUTTON_TEXTS = ["回答する", "解答する", "回答", "解答", "答える", "決定", "送信する"]
-NEXT_BUTTON_TEXTS = ["次の問題", "次へ進む", "次に進む", "次へ", "つぎへ", "続ける", "進む"]
+NEXT_BUTTON_TEXTS = ["次の問題", "次へ進む", "次に進む", "次へ", "つぎへ", "進む"]
+# これらの語を含むボタンは「中断/離脱」用なので絶対に押さない
+ABORT_WORDS = ["中断", "中止", "やめ", "終了", "ログアウト", "戻る", "破棄", "削除", "リセット"]
+# 「中断しますか?」モーダルを閉じる(＝続行する)ボタンの文言
+CANCEL_TEXTS = ["キャンセル", "いいえ", "閉じる", "続ける", "続行"]
+# 「中断しますか?」モーダルが出ていると判定するための特徴的な文言
+ABORT_MODAL_HINTS = ["中断しますか", "解答を中断", "中断してもよろしい", "中断します"]
 # クリック対象になりうる要素(テキスト検索の対象を絞る)
 _CLICKABLE = "button, a, [role=button], input[type=submit], input[type=button]"
 
@@ -497,37 +503,106 @@ def _loc_visible(loc):
         return False
 
 
+def _element_text(el):
+    """要素の表示テキスト + value属性(input用)をまとめて返す。"""
+    txt = ""
+    try:
+        txt = el.inner_text() or ""
+    except Exception:
+        pass
+    if not txt:
+        try:
+            txt = el.get_attribute("value") or ""
+        except Exception:
+            pass
+    return txt
+
+
+def _first_safe(loc):
+    """表示中で、かつ「中断/離脱」系の文言を含まない最初の要素を返す。"""
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(min(n, 15)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+        except Exception:
+            continue
+        text = _element_text(el)
+        if any(w in text for w in ABORT_WORDS):
+            continue  # 「解答を中断する」等はスキップ
+        return el
+    return None
+
+
 def _find_button(page, selector, texts):
-    """selector優先で、無ければ文言(texts)からボタンを探し、表示中の先頭を返す。"""
-    # 1) 明示セレクタ
+    """selector優先。無ければ文言(texts)からボタンを探す。
+
+    「中断」「戻る」等を含むボタンは押さない。完全一致を優先し、無ければ部分一致。
+    """
+    # 1) 明示セレクタ(指定されたものは信頼してそのまま使う)
     if selector:
         loc = page.locator(selector)
         if _loc_visible(loc):
             return loc.first
-    # 2) 文言で探す(クリック可能な要素に限定)
+    # 2) まず完全一致(アクセシブル名)で探す
     for t in texts:
-        loc = page.locator(_CLICKABLE).filter(has_text=t)
-        if _loc_visible(loc):
-            return loc.first
-        # input[type=submit/button] は value 属性に文言が入る
-        loc = page.locator(
-            f'input[type=submit][value*="{t}"], input[type=button][value*="{t}"]'
-        )
-        if _loc_visible(loc):
-            return loc.first
-        # aria-label など(アクセシブル名)でも探す
         try:
-            loc = page.get_by_role("button", name=t)
-            if _loc_visible(loc):
-                return loc.first
+            cand = _first_safe(page.get_by_role("button", name=t, exact=True))
+            if cand is not None:
+                return cand
         except Exception:
             pass
+    # 3) 次に部分一致(クリック可能要素に限定 + 中断系は除外)
+    for t in texts:
+        cand = _first_safe(page.locator(_CLICKABLE).filter(has_text=t))
+        if cand is not None:
+            return cand
+        cand = _first_safe(
+            page.locator(
+                f'input[type=submit][value*="{t}"], input[type=button][value*="{t}"]'
+            )
+        )
+        if cand is not None:
+            return cand
     return None
 
 
 def find_answer_button(page, cfg):
-    """1問ごとの「回答」ボタンを探す。"""
-    return _find_button(page, cfg["answer_button_selector"], ANSWER_BUTTON_TEXTS)
+    """選択後に押す「回答/次へ」ボタンを探す。
+
+    明示指定(ANSWER_BUTTON_SELECTOR)が最優先。無ければ回答系→次へ系の順で探す。
+    「解答を中断する」等の中断ボタンは押さない。
+    """
+    if cfg.get("answer_button_selector"):
+        btn = _find_button(page, cfg["answer_button_selector"], [])
+        if btn is not None:
+            return btn
+    return _find_button(page, "", ANSWER_BUTTON_TEXTS + NEXT_BUTTON_TEXTS)
+
+
+def dismiss_abort_modal(page):
+    """「解答を中断しますか?」等のモーダルが出ていたら「キャンセル」を押して閉じる。
+
+    ツールが誤って中断モーダルを出してしまった場合の保険。閉じられたら True。
+    """
+    try:
+        body = page.locator("body").inner_text(timeout=800) or ""
+    except Exception:
+        return False
+    if not any(h in body for h in ABORT_MODAL_HINTS):
+        return False
+    for t in CANCEL_TEXTS:
+        loc = page.locator(_CLICKABLE).filter(has_text=t)
+        if _loc_visible(loc):
+            print(f"  [中断モーダル] 「{t}」を押して閉じます(中断しません)")
+            move_and_click(page, loc.first)
+            time.sleep(0.4)
+            return True
+    return False
 
 
 def try_click_next(page, cfg):
@@ -576,6 +651,8 @@ def wait_for_next_question(page, cfg, old_sig):
     tried_next = False
     while time.time() < deadline:
         time.sleep(0.5)
+        # 万一「中断しますか?」モーダルが出ていたらキャンセルして続行
+        dismiss_abort_modal(page)
         if question_signature(page, cfg) != old_sig:
             return True
         if not tried_next and try_click_next(page, cfg):
@@ -662,6 +739,8 @@ def solve_all_questions(page, client, cfg):
             break
         print("  回答ボタンを押します")
         move_and_click(page, btn)
+        # 万一「中断しますか?」モーダルが出たらキャンセルして続行(中断しない)
+        dismiss_abort_modal(page)
 
         # 次の問題に切り替わるのを待つ(必要なら「次へ」も押す)
         if not wait_for_next_question(page, cfg, sig):
