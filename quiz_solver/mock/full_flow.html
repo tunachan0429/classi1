@@ -2,58 +2,70 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>モック 全自動フロー(マルチステップ)</title>
+  <title>モック 全自動フロー(マルチステップ+おすすめ演習)</title>
   <style>
     body { font-family: sans-serif; padding: 24px; }
     .screen { display: none; }
     .screen.active { display: block; }
     .assignment { border: 1px solid #ccc; padding: 12px; margin: 8px 0; cursor: pointer; }
     .step { border: 2px solid #26c; padding: 12px; margin: 8px 0; }
+    .reco-problem { border: 1px solid #ccc; padding: 10px; margin: 8px 0; cursor: pointer; }
+    .diff { background: #888; color: #fff; padding: 2px 6px; margin-right: 8px; font-size: 12px; }
     .status { color: #c00; font-weight: bold; }
     .status.done { color: #090; }
     .symbol { font-weight: bold; margin-right: 8px; }
     button { margin: 6px 0; padding: 8px 16px; }
     .kadai-complete { color: #999; border: 1px solid #ddd; padding: 10px; margin-top: 8px; }
+    #video-modal { border: 2px solid #333; padding: 16px; background: #f7f7f7; }
   </style>
 </head>
 <body>
-  <!-- ホーム -->
   <div id="home" class="screen active">
     <h1>ホーム</h1>
     <button onclick="show('training')">学習トレーニング</button>
     <button>Webテスト</button>
   </div>
 
-  <!-- 学習トレーニング -->
   <div id="training" class="screen">
     <h1>学習トレーニング</h1>
     <h2>課題学習</h2>
     <button onclick="show('list')">課題</button>
   </div>
 
-  <!-- 課題一覧 -->
   <div id="list" class="screen">
     <h1>課題一覧</h1>
     <div id="assignment-list"></div>
   </div>
 
-  <!-- 課題詳細(ステップ一覧) -->
   <div id="detail" class="screen">
     <h1 id="detail-title"></h1>
     <p>学習の内容</p>
     <div id="step-list"></div>
-    <div class="kadai-complete" id="kadai-complete">課題完了</div>
+    <div class="kadai-complete">課題完了</div>
     <button onclick="show('list')">課題を中断する</button>
   </div>
 
-  <!-- 問題 -->
+  <!-- 動画モーダル(おすすめ演習の開始時に出る) -->
+  <div id="videoModal" class="screen">
+    <div id="video-modal">
+      <h2>動画で理解を深めよう</h2>
+      <p>「この範囲が苦手…」と感じたら、画面下部にある動画を確認して復習しよう。</p>
+      <button onclick="closeVideo()">閉じる</button>
+    </div>
+  </div>
+
+  <!-- おすすめ演習の問題一覧 -->
+  <div id="recoList" class="screen">
+    <h2>おすすめ演習</h2>
+    <div id="reco-problems"></div>
+  </div>
+
   <div id="quiz" class="screen">
     <div id="quiz-area"></div>
     <button id="answer-btn" onclick="onAnswer()">回答</button>
     <button id="grade-btn" style="display:none" onclick="goResult()">答え合わせへ</button>
   </div>
 
-  <!-- 結果 -->
   <div id="result" class="screen">
     <h1>結果</h1>
     <p>すべての問題に解答済みです</p>
@@ -61,22 +73,23 @@
   </div>
 
   <script>
-    // 課題ごとに複数ステップ。各ステップに問題。
     const ASSIGNMENTS = [
       { name: "[英語] 課題A", steps: [
-          { title: "テストを解く", questions: [
+          { title: "テストを解く", type: "test", questions: [
               { text: "1+1は？", choices: ["1", "2", "3", "4"] },
               { text: "2+2は？", choices: ["3", "4", "5", "6"] } ] },
-          { title: "おすすめ演習", questions: [
-              { text: "3+3は？", choices: ["5", "6", "7", "8"] } ] } ] },
+          { title: "おすすめ演習", type: "recommended", problems: [
+              { name: "練習問題_所有代名詞04", questions: [
+                  { text: "3+3は？", choices: ["5", "6", "7", "8"] } ] },
+              { name: "練習問題_所有代名詞05", questions: [
+                  { text: "9+9は？", choices: ["16", "17", "18", "19"] } ] } ] } ] },
       { name: "[英語] 課題B", steps: [
-          { title: "テストを解く", questions: [
+          { title: "テストを解く", type: "test", questions: [
               { text: "4+4は？", choices: ["7", "8", "9", "10"] },
               { text: "5+5は？", choices: ["9", "10", "11", "12"] } ] } ] },
     ];
     const SYMBOLS = ["ア", "イ", "ウ", "エ"];
 
-    // 完了状態は sessionStorage に保存(リロードしても残る = 実サイトの疑似)
     function loadState() {
       const raw = sessionStorage.getItem('mockState');
       if (raw) return JSON.parse(raw);
@@ -88,7 +101,7 @@
     function saveState() { sessionStorage.setItem('mockState', JSON.stringify(state)); }
     let state = loadState();
 
-    let curAssign = -1, curStep = -1, curQ = 0;
+    let curAssign = -1, curStep = -1, curQuestions = [], curQ = 0;
 
     function show(id) {
       document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('active'); });
@@ -117,18 +130,45 @@
       let html = '';
       a.steps.forEach(function (s, si) {
         html += '<div class="step"><b>' + s.title + '</b> ';
-        if (state.stepDone[curAssign][si]) {
-          html += '<button onclick="alert(1)">結果を見る</button>';
-        } else {
-          html += '<button onclick="startStep(' + si + ')">開始する</button>';
-        }
+        html += state.stepDone[curAssign][si]
+          ? '<button onclick="alert(1)">結果を見る</button>'
+          : '<button onclick="startStep(' + si + ')">開始する</button>';
         html += '</div>';
       });
       document.getElementById('step-list').innerHTML = html;
     }
 
     function startStep(si) {
-      curStep = si; curQ = 0;
+      curStep = si;
+      const st = ASSIGNMENTS[curAssign].steps[si];
+      if (st.type === 'recommended') {
+        show('videoModal');  // まず動画モーダル
+      } else {
+        curQuestions = st.questions;
+        curQ = 0;
+        beginQuiz();
+      }
+    }
+
+    function closeVideo() {
+      // 閉じると、おすすめ演習の問題一覧が出る
+      const st = ASSIGNMENTS[curAssign].steps[curStep];
+      let html = '<h3>[人称代名詞] を解けるようになるためのおすすめ問題</h3>';
+      st.problems.forEach(function (p, pi) {
+        html += '<div class="reco-problem" onclick="startProblem(' + pi + ')">'
+             +  '<span class="diff">難易度A</span>' + p.name + '</div>';
+      });
+      document.getElementById('reco-problems').innerHTML = html;
+      show('recoList');
+    }
+
+    function startProblem(pi) {
+      curQuestions = ASSIGNMENTS[curAssign].steps[curStep].problems[pi].questions;
+      curQ = 0;
+      beginQuiz();
+    }
+
+    function beginQuiz() {
       document.getElementById('grade-btn').style.display = 'none';
       document.getElementById('answer-btn').style.display = 'inline-block';
       renderQuestion();
@@ -136,7 +176,7 @@
     }
 
     function renderQuestion() {
-      const q = ASSIGNMENTS[curAssign].steps[curStep].questions[curQ];
+      const q = curQuestions[curQ];
       let html = '<tui-section-question><h2 class="title">'
         + ASSIGNMENTS[curAssign].name + '</h2>';
       html += '<tui-question-content><tui-rich-text><p>' + q.text + '</p></tui-rich-text>';
@@ -153,7 +193,7 @@
       const checked = document.querySelector('input[name=answer-option]:checked');
       if (!checked) return;
       curQ += 1;
-      if (curQ < ASSIGNMENTS[curAssign].steps[curStep].questions.length) {
+      if (curQ < curQuestions.length) {
         renderQuestion();
       } else {
         document.getElementById('quiz-area').innerHTML = '<p>解答が完了しました</p>';
@@ -165,7 +205,6 @@
     function goResult() { show('result'); }
 
     function backToDetail() {
-      // このステップを完了にする。全ステップ完了なら課題も完了。
       state.stepDone[curAssign][curStep] = true;
       if (state.stepDone[curAssign].every(function (d) { return d; })) {
         state.completed[curAssign] = true;

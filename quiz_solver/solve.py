@@ -87,6 +87,13 @@ def load_config():
         "dialog_action": os.getenv("DIALOG_ACTION", "accept").strip().lower(),
         # 並べかえ問題の語句タイルのセレクタ(空なら自動推定)
         "reorder_tile_selector": os.getenv("REORDER_TILE_SELECTOR", "").strip(),
+        # 「動画で理解を深めよう」等のモーダルを見分ける文言と、閉じるボタンの文言
+        "video_modal_hint": os.getenv("VIDEO_MODAL_HINT", "動画で理解").strip(),
+        "close_modal_text": os.getenv("CLOSE_MODAL_TEXT", "").strip(),
+        # おすすめ演習の問題一覧の各項目のセレクタ(空なら自動推定)
+        "recommended_problem_selector": os.getenv("RECOMMENDED_PROBLEM_SELECTOR", "").strip(),
+        # おすすめ演習の問題項目を見分ける文言(既定「練習問題」)
+        "problem_item_text": os.getenv("PROBLEM_ITEM_TEXT", "練習問題").strip(),
         # 解く問題数の上限(暴走防止のセーフティ)
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
@@ -583,12 +590,13 @@ def select_reorder(page, cfg, order):
     return picked
 
 
-def _wait_for_question(page, cfg):
+def _wait_for_question(page, cfg, timeout_ms=None):
     """問題(解答欄)が表示されるのを待ち、種類を返す。
 
     戻り値: 'single'(4択など) / 'fillin'(複数穴埋め) / 'reorder'(並べかえ) / None
     """
-    deadline = time.time() + cfg["question_timeout"] / 1000.0
+    tmo = timeout_ms if timeout_ms is not None else cfg["question_timeout"]
+    deadline = time.time() + tmo / 1000.0
     while time.time() < deadline:
         groups = radio_groups(page)
         # ラジオ群が複数 → マークシート型の複数穴埋め
@@ -1320,6 +1328,76 @@ def _back_to_steps(page, cfg):
     return True
 
 
+def _dismiss_video_modal(page, cfg):
+    """「動画で理解を深めよう」等のモーダルが出ていたら「閉じる」を押す。"""
+    hint = cfg.get("video_modal_hint", "動画で理解")
+    try:
+        body = page.locator("body").inner_text(timeout=600) or ""
+    except Exception:
+        return False
+    if hint and hint not in body:
+        return False
+    btn = _find_button(page, cfg.get("close_modal_text", ""), ["閉じる", "とじる", "スキップ", "OK"])
+    if btn is not None:
+        print("  [動画モーダル] 「閉じる」を押します")
+        move_and_click(page, btn)
+        time.sleep(0.5)
+        return True
+    return False
+
+
+def _click_first_recommended_problem(page, cfg):
+    """おすすめ演習の問題一覧から、一番上の問題を選んでクリックする。"""
+    sel = cfg.get("recommended_problem_selector", "")
+    if sel:
+        loc = page.locator(sel)
+        if _loc_visible(loc):
+            print("  おすすめ演習の先頭の問題を選びます")
+            move_and_click(page, loc.first)
+            return True
+        return False
+    # ヒューリスティック: 「練習問題」等を含む個別項目(短めのテキスト)を上から探す
+    key = cfg.get("problem_item_text", "練習問題")
+    try:
+        loc = page.get_by_text(key, exact=False)
+        n = loc.count()
+    except Exception:
+        n = 0
+    for i in range(min(n, 40)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            t = (el.inner_text() or "").strip()
+        except Exception:
+            continue
+        if key in t and len(t) < 60:  # 見出しではなく個別の問題名っぽいもの
+            print(f"  おすすめ演習の先頭の問題「{t[:30]}」を選びます")
+            move_and_click(page, el)
+            return True
+    return False
+
+
+def _reach_quiz(page, cfg):
+    """「開始する」を押した後、問題画面まで進む。
+
+    - 「動画で理解を深めよう」モーダルが出たら閉じる
+    - すぐ問題が出なければ、おすすめ演習の一覧とみなして先頭の問題を選ぶ
+    問題(単一選択/穴埋め/並べかえ)にたどり着けたら True。
+    """
+    _dismiss_video_modal(page, cfg)
+    # すぐ問題が出るか(短め)
+    if _wait_for_question(page, cfg, timeout_ms=3000) is not None:
+        return True
+    # おすすめ演習の問題一覧かも → 先頭の問題を選ぶ
+    if _click_first_recommended_problem(page, cfg):
+        _dismiss_video_modal(page, cfg)
+        if _wait_for_question(page, cfg) is not None:
+            return True
+    # 最後にもう一度だけ待つ
+    return _wait_for_question(page, cfg, timeout_ms=5000) is not None
+
+
 def _find_start_button(page, cfg, wait_ms):
     """課題詳細画面の「開始する」ボタンを、最大 wait_ms ミリ秒まで待って探す。
 
@@ -1363,9 +1441,12 @@ def solve_one_assignment(page, client, cfg):
         print(f"  --- ステップ {step}: 「{cfg['start_text']}」を押します ---")
         move_and_click(page, start_btn)
 
-        # 問題(単一選択/穴埋め/並べかえ)が出るまで待つ。動画のみ等で無い場合もある
-        if _wait_for_question(page, cfg) is None:
-            print("  [注意] このステップには解ける問題が見つかりませんでした。詳細画面に戻ります。")
+        # 開始直後の分岐に対応:
+        #  ・「動画で理解を深めよう」モーダルが出たら閉じる
+        #  ・おすすめ演習の一覧が出たら、一番上の問題を選ぶ
+        #  ・それから問題(単一選択/穴埋め/並べかえ)が出るまで待つ
+        if not _reach_quiz(page, cfg):
+            print("  [注意] このステップには解ける問題が見つかりませんでした(動画のみ等)。詳細画面に戻ります。")
             _back_to_steps(page, cfg)
             continue
 
