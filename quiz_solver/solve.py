@@ -85,6 +85,8 @@ def load_config():
         "auto_next": os.getenv("AUTO_NEXT", "false").lower() == "true",
         # ブラウザの確認ダイアログ(「中断しますか?」等)への対応: accept=OK / dismiss=キャンセル
         "dialog_action": os.getenv("DIALOG_ACTION", "accept").strip().lower(),
+        # 並べかえ問題の語句タイルのセレクタ(空なら自動推定)
+        "reorder_tile_selector": os.getenv("REORDER_TILE_SELECTOR", "").strip(),
         # 解く問題数の上限(暴走防止のセーフティ)
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
@@ -449,10 +451,142 @@ def select_fillin(page, blanks, answers):
     return picked
 
 
+# ------------------------------------------------------------
+# 並べかえ問題(語句タイルを正しい順にタップ)
+# ------------------------------------------------------------
+def _reorder_exclude_words():
+    """タイルとして拾わない語(ナビ・操作ボタン)。呼び出し時に構築する。"""
+    return (
+        ANSWER_BUTTON_TEXTS + NEXT_BUTTON_TEXTS
+        + ["答え合わせ", "課題詳細", "中断", "クリア", "戻る", "結果を見る", "開始", "リセット", "×", "✕"]
+    )
+
+
+def _collect_reorder_tiles(page, cfg):
+    """並べかえの語句タイルを [(text, element), ...] で返す(出現順)。"""
+    if cfg.get("reorder_tile_selector"):
+        loc = page.locator(cfg["reorder_tile_selector"])
+        use_filter = False
+    else:
+        # ヒューリスティック: クリックできそうな短いテキストの要素
+        loc = page.locator(
+            "button, [role=button], li[onclick], span[onclick], div[onclick], [draggable='true']"
+        )
+        use_filter = True
+    tiles = []
+    try:
+        n = loc.count()
+    except Exception:
+        return []
+    for i in range(min(n, 80)):
+        el = loc.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            t = (el.inner_text() or "").strip()
+        except Exception:
+            continue
+        if not t:
+            continue
+        if use_filter:
+            if len(t) > 40:
+                continue
+            if any(w and w in t for w in _reorder_exclude_words()):
+                continue
+        tiles.append((t, el))
+    return tiles
+
+
+def _detect_reorder(page, cfg):
+    """今の画面が「並べかえ問題」かどうかを判定する。"""
+    tiles = _collect_reorder_tiles(page, cfg)
+    if cfg.get("reorder_tile_selector"):
+        return len(tiles) >= 2
+    # セレクタ未指定時は、設問に空欄「( )」が複数あり、かつタイル候補が複数あるとき
+    try:
+        qtxt = page.locator(cfg["question_selector"]).first.inner_text(timeout=500) or ""
+    except Exception:
+        qtxt = ""
+    blanks = len(re.findall(r"[（(]\s*[）)]", qtxt))
+    return blanks >= 2 and len(tiles) >= 2
+
+
+def extract_reorder_words(page, cfg):
+    """並べかえの語句一覧(表示順)を返す。"""
+    return [t for (t, _el) in _collect_reorder_tiles(page, cfg)]
+
+
+def ask_gemini_reorder(client, model, image_bytes, question_text, words):
+    """並べかえ問題を解かせ、正しい順に並べた語のリストと生テキストを返す。"""
+    words_str = ", ".join(f'"{w}"' for w in words)
+    prompt = f"""あなたは英語の並べかえ問題を解く専門家です。
+添付画像は「与えられた語(句)を並べかえて、日本語の意味に合う正しい英文を作る」問題です。
+
+【問題(参考テキスト)】
+{question_text or "(画像を参照)"}
+
+【与えられた語(句)】(順不同):
+{words_str}
+
+【指示】
+・日本語の意味に合う、文法的に正しい英文になるよう、上の語(句)を並べる順番を決めてください。
+・与えられた語(句)は、原則すべてを1回ずつ使います(同じ語が複数あればその回数だけ使う)。
+・出力は、並べる順に語(句)を入れたJSON配列だけにしてください。前後に説明は不要です。
+例: ["thought", "it", "impossible", "to", "solve"]
+"""
+    contents = [
+        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+        prompt,
+    ]
+    resp = _generate_with_retry(client, model, contents)
+    text = (resp.text or "").strip()
+    order = []
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            order = [str(x).strip() for x in data if str(x).strip()]
+        except Exception:
+            pass
+    return order, text
+
+
+def select_reorder(page, cfg, order):
+    """Geminiが決めた順に、語句タイルを1つずつタップする。
+
+    毎回タイルを取り直し、まだ残っている(表示中の)タイルから一致する語を選ぶ。
+    戻り値: タップできた語数。
+    """
+    picked = 0
+    for word in order:
+        target = None
+        tiles = _collect_reorder_tiles(page, cfg)
+        # 1) 完全一致
+        for (t, el) in tiles:
+            if t == word:
+                target = el
+                break
+        # 2) 大文字小文字・空白を無視した一致
+        if target is None:
+            wl = word.lower().strip()
+            for (t, el) in tiles:
+                if t.lower().strip() == wl:
+                    target = el
+                    break
+        if target is None:
+            print(f"    語「{word}」のタイルが見つかりません(スキップ)")
+            continue
+        move_and_click(page, target)
+        print(f"    「{word}」をタップ")
+        picked += 1
+        time.sleep(0.2)
+    return picked
+
+
 def _wait_for_question(page, cfg):
     """問題(解答欄)が表示されるのを待ち、種類を返す。
 
-    戻り値: 'single'(4択など) / 'fillin'(複数穴埋め) / None(見つからない)
+    戻り値: 'single'(4択など) / 'fillin'(複数穴埋め) / 'reorder'(並べかえ) / None
     """
     deadline = time.time() + cfg["question_timeout"] / 1000.0
     while time.time() < deadline:
@@ -469,6 +603,9 @@ def _wait_for_question(page, cfg):
             if any(o in FILLIN_OPTIONS for o in opts) and not any(o in SYMBOLS for o in opts):
                 return "fillin"
             return "single"
+        # ラジオが無い → 並べかえ問題かどうか
+        if _detect_reorder(page, cfg):
+            return "reorder"
         time.sleep(0.4)
     return None
 
@@ -982,6 +1119,27 @@ def solve_all_questions(page, client, cfg):
                 print(f"  ✓ {n_picked}/{len(blanks)} 個の空欄を選択  ({summary})")
                 results.append((qi, summary))
             time.sleep(0.3)
+        elif qtype == "reorder":
+            # ===== 並べかえ(語句タイルを正しい順にタップ) =====
+            words = extract_reorder_words(page, cfg)
+            print(f"  並べかえ問題を検出(語: {', '.join(words)})")
+            print("  Geminiに問い合わせ中...")
+            try:
+                order, raw = ask_gemini_reorder(
+                    client, cfg["model"], img_bytes, q_text, words
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
+                print("         時間をおいて再実行するか、GEMINI_MODEL を変えて試してください。")
+                break
+            if not order:
+                print(f"  [判定不能] Geminiの返答: {raw[:120]}")
+                results.append((qi, "並べかえ:判定不能"))
+            else:
+                n_picked = select_reorder(page, cfg, order)
+                print(f"  ✓ {n_picked}/{len(words)} 語をタップ  ({' '.join(order)})")
+                results.append((qi, " ".join(order)))
+            time.sleep(0.3)
         else:
             # ===== 4択などの単一選択 =====
             form = page.locator(cfg["form_selector"]).first
@@ -1186,12 +1344,8 @@ def solve_one_assignment(page, client, cfg):
         print(f"  --- ステップ {step}: 「{cfg['start_text']}」を押します ---")
         move_and_click(page, start_btn)
 
-        # 解答欄が出るまで待つ(動画のみのステップ等、問題が無い場合もある)
-        try:
-            page.wait_for_selector(
-                cfg["form_selector"], state="visible", timeout=cfg["question_timeout"]
-            )
-        except PWTimeoutError:
+        # 問題(単一選択/穴埋め/並べかえ)が出るまで待つ。動画のみ等で無い場合もある
+        if _wait_for_question(page, cfg) is None:
             print("  [注意] このステップには解ける問題が見つかりませんでした。詳細画面に戻ります。")
             _back_to_steps(page, cfg)
             continue

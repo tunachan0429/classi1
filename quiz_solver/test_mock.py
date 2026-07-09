@@ -14,6 +14,7 @@ DIALOG_MOCK = pathlib.Path(__file__).parent / "mock" / "dialog.html"
 ABORT_BUTTONS_MOCK = pathlib.Path(__file__).parent / "mock" / "abort_buttons.html"
 FULL_FLOW_MOCK = pathlib.Path(__file__).parent / "mock" / "full_flow.html"
 FILLIN_MOCK = pathlib.Path(__file__).parent / "mock" / "fillin.html"
+REORDER_MOCK = pathlib.Path(__file__).parent / "mock" / "reorder.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -290,6 +291,47 @@ def test_fillin(browser):
     print(f"穴埋め解答 OK: {results}")
 
 
+def test_reorder(browser):
+    """並べかえ問題(語句タイルを正しい順にタップ)を検出して順にタップできるか。"""
+    cfg = {
+        "url": REORDER_MOCK.resolve().as_uri(),
+        "form_selector": "tui-single-select-form",  # 並べかえには存在しない
+        "question_selector": "tui-section-question",
+        "answer_button_selector": "",
+        "next_selector": "",
+        "auto_next": False,
+        "max_questions": 5,
+        "question_timeout": 3000,
+        "model": "dummy",
+        "reorder_tile_selector": ".tile",
+    }
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(cfg["url"])
+
+    # 1) 語句の抽出(表示順)
+    words = solve.extract_reorder_words(page, cfg)
+    assert words == ["impossible", "solve", "it", "thought", "to"], f"語抽出失敗: {words}"
+    # クリアボタン(×)はタイルに含まれないこと
+    assert "×" not in words and "✕" not in words, "クリアボタンを語として拾っている"
+    print(f"並べかえ 語抽出 OK: {words}")
+
+    # 2) Geminiをスタブして solve_all_questions を実行 → 正しい順にタップされる
+    correct = ["thought", "it", "impossible", "to", "solve"]
+    original = solve.ask_gemini_reorder
+    solve.ask_gemini_reorder = lambda client, model, img, qtext, ws: (correct, "raw")
+    try:
+        results = solve.solve_all_questions(page, None, cfg)
+    finally:
+        solve.ask_gemini_reorder = original
+
+    assert len(results) == 1, f"1問処理する想定だが {len(results)}: {results}"
+    tapped = page.evaluate("() => window.__tapOrder")
+    assert tapped == correct, f"タップ順が違う: {tapped}"
+    assert page.locator("#done").is_visible(), "回答後の完了表示が出ていない"
+    page.close()
+    print(f"並べかえ解答 OK: タップ順={tapped}")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -328,6 +370,11 @@ def main():
         # 0g) マークシート型 複数穴埋めのテスト
         print("---- 複数穴埋めテスト ----")
         test_fillin(browser)
+        print()
+
+        # 0h) 並べかえ問題のテスト
+        print("---- 並べかえテスト ----")
+        test_reorder(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})
