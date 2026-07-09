@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 確認ダイアログ</title>
+</head>
+<body>
+  <h1>確認ダイアログのテスト</h1>
+  <button id="go" type="button" onclick="doGo()">回答</button>
+  <div id="after" style="display:none">次に進みました</div>
+  <script>
+    function doGo() {
+      // 「回答」を押すと「中断しますか?」の確認が出る想定
+      if (confirm("中断しますか?")) {
+        document.getElementById('after').style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -51,8 +51,12 @@ def load_config():
         "submit_selector": "" if args.no_submit else os.getenv("SUBMIT_SELECTOR", "").strip(),
         # 1問ごとに押す「回答」ボタン(空ならボタン文言から自動検出)
         "answer_button_selector": os.getenv("ANSWER_BUTTON_SELECTOR", "").strip(),
-        # 回答後にフィードバック画面などで出る「次へ」ボタン(空なら文言から自動検出)
+        # 回答後にフィードバック画面などで出る「次へ」ボタン(指定したときだけ押す)
         "next_selector": os.getenv("NEXT_SELECTOR", "").strip(),
+        # 「次へ」ボタンを文言から自動で探して押すか(既定OFF。誤クリック防止のため)
+        "auto_next": os.getenv("AUTO_NEXT", "false").lower() == "true",
+        # ブラウザの確認ダイアログ(「中断しますか?」等)への対応: accept=OK / dismiss=キャンセル
+        "dialog_action": os.getenv("DIALOG_ACTION", "accept").strip().lower(),
         # 解く問題数の上限(暴走防止のセーフティ)
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
@@ -121,6 +125,38 @@ def install_cursor(page):
         page.evaluate(CURSOR_SCRIPT)
     except Exception:
         pass  # カーソル表示は失敗しても本処理には影響させない
+
+
+# ------------------------------------------------------------
+# 確認ダイアログ(「中断しますか?」など)を自動で処理する
+# ------------------------------------------------------------
+def install_dialog_handler(page, cfg):
+    """alert / confirm / beforeunload を自動処理して、操作が止まらないようにする。
+
+    - beforeunload(ページ離脱の確認)は常に承諾して、次の問題への遷移を通す。
+    - それ以外の confirm/alert は DIALOG_ACTION 設定(既定 accept)に従う。
+    これを入れないと「中断しますか?」等のダイアログでブラウザ操作が止まってしまう。
+    """
+    action = cfg.get("dialog_action", "accept")
+
+    def handler(dialog):
+        msg = (dialog.message or "").replace("\n", " ").strip()
+        try:
+            if dialog.type == "beforeunload":
+                dialog.accept()  # 離脱を許可 = 次の問題へ進む
+                print(f"  [ダイアログ] 離脱確認「{msg}」→ 承諾(次へ進みます)")
+                return
+            if action == "dismiss":
+                dialog.dismiss()
+                print(f"  [ダイアログ] 「{msg}」→ キャンセルを選びました")
+            else:
+                dialog.accept()
+                print(f"  [ダイアログ] 「{msg}」→ OK を選びました")
+        except Exception:
+            # 既に閉じられている等は無視
+            pass
+
+    page.on("dialog", handler)
 
 
 # ------------------------------------------------------------
@@ -196,9 +232,44 @@ def ask_gemini(client, model, image_bytes, question_text, options):
         types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
         prompt,
     ]
-    resp = client.models.generate_content(model=model, contents=contents)
+    resp = _generate_with_retry(client, model, contents)
     text = (resp.text or "").strip()
     return parse_answer(text, symbols)
+
+
+def _is_retryable_error(e):
+    """Gemini の一時的なエラー(混雑・レート制限など)かどうか。"""
+    code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    if code in (429, 500, 502, 503, 504):
+        return True
+    msg = str(e).upper()
+    keywords = [
+        "503", "502", "504", "429", "500",
+        "UNAVAILABLE", "RESOURCE_EXHAUSTED", "INTERNAL",
+        "OVERLOADED", "HIGH DEMAND", "TIMEOUT", "DEADLINE",
+    ]
+    return any(k in msg for k in keywords)
+
+
+def _generate_with_retry(client, model, contents, max_attempts=6, base_delay=5):
+    """generate_content を、一時的エラー時に待って再試行しながら呼ぶ。"""
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt >= max_attempts or not _is_retryable_error(e):
+                raise
+            delay = min(base_delay * (2 ** (attempt - 1)), 60)
+            print(
+                f"  [再試行] Geminiが混雑しています(試行 {attempt}/{max_attempts})。"
+                f"{delay}秒待って再試行します..."
+            )
+            time.sleep(delay)
+    # ここには来ないが保険
+    if last_err:
+        raise last_err
 
 
 def parse_answer(text, symbols):
@@ -460,8 +531,19 @@ def find_answer_button(page, cfg):
 
 
 def try_click_next(page, cfg):
-    """フィードバック画面などで出る「次へ」ボタンがあれば押す。"""
-    btn = _find_button(page, cfg["next_selector"], NEXT_BUTTON_TEXTS)
+    """フィードバック画面などで出る「次へ」ボタンを押す。
+
+    誤クリック防止のため、次のどちらかのときだけ動く:
+      - NEXT_SELECTOR が指定されている(そのセレクタだけを押す)
+      - AUTO_NEXT=true のとき(文言から「次へ」系を自動で探す)
+    どちらでもなければ何もしない(回答ボタンだけで次に進むサイト向け)。
+    """
+    if cfg.get("next_selector"):
+        btn = _find_button(page, cfg["next_selector"], [])
+    elif cfg.get("auto_next"):
+        btn = _find_button(page, "", NEXT_BUTTON_TEXTS)
+    else:
+        return False
     if btn is not None:
         print("  「次へ」ボタンを押します")
         move_and_click(page, btn)
@@ -538,7 +620,13 @@ def solve_all_questions(page, client, cfg):
 
         # Gemini に解かせる
         print("  Geminiに問い合わせ中...")
-        answer, reason, raw = ask_gemini(client, cfg["model"], img_bytes, q_text, options)
+        try:
+            answer, reason, raw = ask_gemini(client, cfg["model"], img_bytes, q_text, options)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
+            print("         時間をおいて再実行するか、.env の GEMINI_MODEL を")
+            print("         別のモデル(例: gemini-2.0-flash)に変えて試してください。")
+            break
 
         # 記号 → 対応するラジオを決める
         target = None
@@ -592,6 +680,9 @@ def run(cfg):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=cfg["headless"], slow_mo=cfg["slow_mo"])
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+
+        # 確認ダイアログ(「中断しますか?」等)で止まらないよう自動処理を仕込む
+        install_dialog_handler(page, cfg)
 
         # 先にログイン(設定があるときだけ実行)。同じブラウザなのでセッションは引き継がれる
         try:

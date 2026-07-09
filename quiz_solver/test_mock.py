@@ -10,6 +10,7 @@ LOGIN_2STEP_MOCK = pathlib.Path(__file__).parent / "mock" / "login_2step.html"
 LOGIN_ENTER_MOCK = pathlib.Path(__file__).parent / "mock" / "login_enter.html"
 QUIZ_GUARDED_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_guarded.html"
 QUIZ_MULTI_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_multi.html"
+DIALOG_MOCK = pathlib.Path(__file__).parent / "mock" / "dialog.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -147,6 +148,29 @@ def test_solve_all_questions(browser):
     print(f"連続回答(選択→回答→次へ)テスト OK: {len(results)}問を処理")
 
 
+def test_dialog_handler(browser):
+    """「中断しますか?」などの確認ダイアログを自動処理できるか。"""
+    url = DIALOG_MOCK.resolve().as_uri()
+
+    # accept: OKを押す → 次に進む(#after が表示される)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.install_dialog_handler(page, {"dialog_action": "accept"})
+    page.goto(url)
+    page.click("#go")
+    assert page.locator("#after").is_visible(), "acceptなのに次へ進んでいない"
+    page.close()
+    print("ダイアログ accept ケース OK (自動でOKを押して進めた)")
+
+    # dismiss: キャンセルを押す → 進まない(#after は非表示のまま)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.install_dialog_handler(page, {"dialog_action": "dismiss"})
+    page.goto(url)
+    page.click("#go")
+    assert not page.locator("#after").is_visible(), "dismissなのに進んでしまった"
+    page.close()
+    print("ダイアログ dismiss ケース OK (自動でキャンセルを押した)")
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -165,6 +189,11 @@ def main():
         # 0c) 連続回答(選択→回答→次へ)のテスト
         print("---- 連続回答テスト ----")
         test_solve_all_questions(browser)
+        print()
+
+        # 0d) 確認ダイアログ自動処理のテスト
+        print("---- 確認ダイアログテスト ----")
+        test_dialog_handler(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})
