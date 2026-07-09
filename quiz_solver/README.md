@@ -87,6 +87,16 @@ LOGIN_NEXT_SELECTOR=button[type=submit]   （例。実際の「次へ」ボタ�
 > 以前出ていた `Page.fill: Timeout ... input[type=password] ... element is not visible` は、
 > この2段階ログイン（パスワード欄が最初は非表示）が原因でした。上記の対応で解消します。
 
+### ログインボタンが `button[type=submit]` でないサイト
+
+`login button not found`（ログインボタンが見つからない）と出た場合でも、
+**ボタンが見つからなければ入力欄で自動的に Enter を押して送信**します。
+そのため多くのサイトは `LOGIN_BUTTON_SELECTOR` を変えなくてもログインできます。
+
+- もし Enter では送信できないサイトなら、`LOGIN_BUTTON_SELECTOR` に実際のログインボタンの
+  セレクタ（例 `button.login`, `input[type=submit]` など）を設定してください。
+- ログインが成功したか確実に判定するため、`LOGIN_SUCCESS_SELECTOR` の設定を推奨します。
+
 > ⚠️ `.env` にはパスワードが平文で入ります。`.env` は `.gitignore` 済みで共有されませんが、PCの取り扱いには注意してください。**このログイン機能は自分自身のサイト／アカウント用です。**
 
 ## 調整用の設定（.env）

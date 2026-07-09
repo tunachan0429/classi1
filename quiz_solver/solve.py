@@ -247,6 +247,24 @@ def _first_visible(page, selector):
         return False
 
 
+def _click_button_or_enter(page, cfg, field_selector, label):
+    """ログインボタンがあれば押す。無ければ field_selector で Enter を押して代用する。
+
+    サイトによって送信ボタンの形が違ったり、そもそもボタンが無く Enter 送信のことも
+    あるため、両対応にしておく。
+    """
+    if _first_visible(page, cfg["login_button_selector"]):
+        print(f"  {label} ログインボタンを押します")
+        move_and_click(page, page.locator(cfg["login_button_selector"]).first)
+        return
+    # ボタンが見つからない/非表示 → 入力欄で Enter を押して送信を試みる
+    try:
+        print(f"  {label} ボタンが無いため {field_selector} で Enter を押します")
+        page.press(field_selector, "Enter")
+    except Exception:
+        pass
+
+
 def _advance_to_password(page, cfg):
     """2段階ログイン用: ユーザー名の次画面(パスワード欄)へ進める。
 
@@ -262,18 +280,7 @@ def _advance_to_password(page, cfg):
             return
         print(f"  [注意] LOGIN_NEXT_SELECTOR({cfg['login_next_selector']})が見つかりませんでした。別の方法を試します。")
 
-    btn = page.locator(cfg["login_button_selector"])
-    if btn.count() > 0 and _first_visible(page, cfg["login_button_selector"]):
-        print("  [2段階] ログインボタンを押してパスワード欄を表示します")
-        move_and_click(page, btn.first)
-        return
-
-    # 最後の手段: ユーザー名欄で Enter
-    try:
-        print("  [2段階] ユーザー名欄で Enter を押してパスワード欄を表示します")
-        page.press(cfg["login_user_selector"], "Enter")
-    except Exception:
-        pass
+    _click_button_or_enter(page, cfg, cfg["login_user_selector"], "[2段階]")
 
 
 def login(page, cfg):
@@ -318,14 +325,8 @@ def login(page, cfg):
     # パスワード
     page.fill(pass_sel, cfg["login_pass"])
 
-    # ログインボタン → 遷移待ち
-    btn = page.locator(cfg["login_button_selector"])
-    if btn.count() == 0:
-        print(f"  [エラー] ログインボタン({cfg['login_button_selector']})が見つかりませんでした。")
-        print("          .env の LOGIN_BUTTON_SELECTOR を確認してください。")
-        raise RuntimeError("login button not found")
-
-    move_and_click(page, btn.first)
+    # 送信: ログインボタンがあれば押す。無ければパスワード欄で Enter を押して送信する
+    _click_button_or_enter(page, cfg, pass_sel, "[送信]")
 
     # ログイン成功の確認
     if cfg["login_success_selector"]:

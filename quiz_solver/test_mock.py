@@ -7,6 +7,7 @@ import solve
 MOCK = pathlib.Path(__file__).parent / "mock" / "quiz.html"
 LOGIN_MOCK = pathlib.Path(__file__).parent / "mock" / "login.html"
 LOGIN_2STEP_MOCK = pathlib.Path(__file__).parent / "mock" / "login_2step.html"
+LOGIN_ENTER_MOCK = pathlib.Path(__file__).parent / "mock" / "login_enter.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -68,6 +69,14 @@ def test_login(browser):
     assert page.locator("#dashboard").count() == 1, "2段階ログイン(明示next)後の目印が出ていない"
     page.close()
     print("2段階ログイン(next明示)ケース OK")
+
+    # 6) 送信ボタンが無く Enter だけで進む/送信するサイト → 成功
+    #    ログインボタンが見つからない場合に Enter フォールバックが働くことを確認
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.login(page, make_login_cfg("testuser", "testpass", url=LOGIN_ENTER_MOCK))
+    assert page.locator("#dashboard").count() == 1, "Enter送信ログイン後の目印が出ていない"
+    page.close()
+    print("Enter送信(ボタン無し)ケース OK")
 
 
 def main():
