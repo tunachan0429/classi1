@@ -8,6 +8,7 @@ MOCK = pathlib.Path(__file__).parent / "mock" / "quiz.html"
 LOGIN_MOCK = pathlib.Path(__file__).parent / "mock" / "login.html"
 LOGIN_2STEP_MOCK = pathlib.Path(__file__).parent / "mock" / "login_2step.html"
 LOGIN_ENTER_MOCK = pathlib.Path(__file__).parent / "mock" / "login_enter.html"
+QUIZ_GUARDED_MOCK = pathlib.Path(__file__).parent / "mock" / "quiz_guarded.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -79,6 +80,43 @@ def test_login(browser):
     print("Enter送信(ボタン無し)ケース OK")
 
 
+def test_open_quiz_page(browser):
+    """問題ページでログイン画面が出た場合に、その場でログインして問題に入れるか。
+
+    ユーザーの報告「ログインしても問題URLに移るとまたログイン画面が出る」ケースを再現。
+    """
+    cfg = {
+        "url": QUIZ_GUARDED_MOCK.resolve().as_uri(),
+        "use_login": True,
+        "login_user": "testuser",
+        "login_pass": "testpass",
+        "login_user_selector": "input[name=username]",
+        "login_pass_selector": "input[type=password]",
+        "login_button_selector": "button[type=submit]",
+        "login_next_selector": "",
+        "form_selector": "tui-single-select-form",
+    }
+    # 1) 問題ページで再ログイン → 問題フォームに入れる
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    solve.open_quiz_page(page, cfg)
+    assert page.locator("tui-single-select-form").first.is_visible(), "問題フォームが表示されていない"
+    assert not solve._login_form_present(page, cfg), "まだログイン画面が残っている"
+    page.close()
+    print("問題ページでの再ログイン → 問題表示 OK")
+
+    # 2) 誤った資格情報 → 問題ページに入れず失敗
+    bad = dict(cfg, login_pass="wrong")
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        solve.open_quiz_page(page, bad)
+    except RuntimeError:
+        print("誤資格情報での再ログイン失敗検出 OK")
+    else:
+        raise AssertionError("誤った資格情報なのに問題ページに入れたと判定された")
+    finally:
+        page.close()
+
+
 def main():
     url = MOCK.resolve().as_uri()
     with sync_playwright() as p:
@@ -87,6 +125,11 @@ def main():
         # 0) ログイン処理のテスト
         print("---- ログインテスト ----")
         test_login(browser)
+        print()
+
+        # 0b) 問題ページで再ログインするテスト
+        print("---- 問題ページ再ログインテスト ----")
+        test_open_quiz_page(browser)
         print()
 
         page = browser.new_page(viewport={"width": 1280, "height": 900})

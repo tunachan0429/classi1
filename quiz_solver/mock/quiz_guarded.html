@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 要ログインの問題ページ</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    label { display: block; margin: 6px 0; }
+    #quiz { display: none; }  /* ログインするまで問題は隠れている */
+    .symbol { font-weight: bold; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <!-- 問題URLに直接来たがログインが必要 → まずログイン画面が出る想定 -->
+  <div id="login">
+    <h1>ログインが必要です</h1>
+    <form id="login-form" onsubmit="return doLogin(event)">
+      <label>ユーザー名: <input type="text" name="username"></label>
+      <label>パスワード: <input type="password" name="password"></label>
+      <button type="submit">ログイン</button>
+    </form>
+  </div>
+
+  <!-- ログイン後に表示される問題本体 -->
+  <div id="quiz">
+    <tui-section-question class="tui-image-container">
+      <h2 class="title">練習問題_ログイン後</h2>
+      <tui-question-content>
+        <tui-rich-text><p>次の問いに答えなさい。</p></tui-rich-text>
+        <tui-single-select-form>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_0">
+            <span class="symbol">ア</span><span>選択肢1</span>
+          </label>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_1">
+            <span class="symbol">イ</span><span>選択肢2</span>
+          </label>
+        </tui-single-select-form>
+      </tui-question-content>
+    </tui-section-question>
+  </div>
+
+  <script>
+    function doLogin(e) {
+      e.preventDefault();
+      const u = document.querySelector('input[name=username]').value;
+      const p = document.querySelector('input[name=password]').value;
+      if (u === 'testuser' && p === 'testpass') {
+        // ログイン画面を隠して問題を表示(SPAのように同じページ内で切り替わる)
+        document.getElementById('login').style.display = 'none';
+        document.getElementById('quiz').style.display = 'block';
+      } else {
+        alert('ユーザー名かパスワードが違います');
+      }
+      return false;
+    }
+  </script>
+</body>
+</html>

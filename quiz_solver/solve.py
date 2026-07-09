@@ -283,18 +283,18 @@ def _advance_to_password(page, cfg):
     _click_button_or_enter(page, cfg, cfg["login_user_selector"], "[2段階]")
 
 
-def login(page, cfg):
-    """LOGIN_URL を開き、ユーザー名・パスワードを入力してログインする。
+def _login_form_present(page, cfg):
+    """今のページにログインフォーム(ユーザー名 or パスワード欄)が見えているか。"""
+    return _first_visible(page, cfg["login_user_selector"]) or _first_visible(
+        page, cfg["login_pass_selector"]
+    )
 
-    ログイン設定(URL・ユーザー・パスワード)が揃っていない場合は何もしない。
-    ユーザー名の後にパスワード欄が出てくる「2段階ログイン」にも対応する。
-    成功可否は LOGIN_SUCCESS_SELECTOR が指定されていればそれで確認する。
+
+def _perform_login_on_page(page, cfg):
+    """今表示されているページに対してユーザー名・パスワードを入力して送信する。
+
+    ページ遷移(goto)はしない。LOGIN_URL でも、問題ページで出たログイン画面でも使える。
     """
-    if not cfg["use_login"]:
-        return
-
-    print(f"[ログイン] {cfg['login_url']}")
-    page.goto(cfg["login_url"], wait_until="networkidle", timeout=60000)
     install_cursor(page)
 
     # ユーザー名(表示されるのを待ってから入力)
@@ -328,9 +328,10 @@ def login(page, cfg):
     # 送信: ログインボタンがあれば押す。無ければパスワード欄で Enter を押して送信する
     _click_button_or_enter(page, cfg, pass_sel, "[送信]")
 
-    # ログイン成功の確認
+
+def _verify_login(page, cfg):
+    """ログイン成功の確認。LOGIN_SUCCESS_SELECTOR があればそれを待つ。"""
     if cfg["login_success_selector"]:
-        # 目印が指定されていれば、それが現れるまで待つ(遷移でもSPAでもOK)
         try:
             page.wait_for_selector(cfg["login_success_selector"], timeout=20000)
         except PWTimeoutError:
@@ -344,7 +345,59 @@ def login(page, cfg):
         except PWTimeoutError:
             pass
 
+
+def login(page, cfg):
+    """LOGIN_URL を開き、ユーザー名・パスワードを入力してログインする。
+
+    ログイン設定(URL・ユーザー・パスワード)が揃っていない場合は何もしない。
+    ユーザー名の後にパスワード欄が出てくる「2段階ログイン」にも対応する。
+    成功可否は LOGIN_SUCCESS_SELECTOR が指定されていればそれで確認する。
+    """
+    if not cfg["use_login"]:
+        return
+
+    print(f"[ログイン] {cfg['login_url']}")
+    page.goto(cfg["login_url"], wait_until="networkidle", timeout=60000)
+    _perform_login_on_page(page, cfg)
+    _verify_login(page, cfg)
     print("  ✓ ログインに成功しました\n")
+
+
+def open_quiz_page(page, cfg):
+    """問題ページを開く。ログイン画面が出たらその場でログインして問題ページに入る。
+
+    - セッションが引き継がれない(SPAでメモリ内トークンが消える)サイト
+    - 保護ページに直接アクセスすると returnUrl 付きログインへ飛ばされるサイト
+    のどちらでも、問題ページにたどり着けるようにする。
+    """
+    print(f"[開く] {cfg['url']}")
+    page.goto(cfg["url"], wait_until="networkidle", timeout=60000)
+    install_cursor(page)
+
+    # ログインが不要、またはログイン画面が出ていないならそのまま
+    if not (cfg["use_login"] and _login_form_present(page, cfg)):
+        return
+
+    print("[再ログイン] 問題ページでログイン画面が出たため、その場でログインします")
+    print("            (最初のログインのセッションが引き継がれていないようです)")
+    _perform_login_on_page(page, cfg)
+    try:
+        page.wait_for_load_state("networkidle", timeout=20000)
+    except PWTimeoutError:
+        pass
+    time.sleep(1.0)
+
+    # returnUrl で自動的に問題ページへ戻らない場合は、もう一度問題URLを開く
+    if _login_form_present(page, cfg) or page.locator(cfg["form_selector"]).count() == 0:
+        page.goto(cfg["url"], wait_until="networkidle", timeout=60000)
+        install_cursor(page)
+
+    # それでもログイン画面のままなら失敗
+    if _login_form_present(page, cfg):
+        raise RuntimeError(
+            "ログインしても問題ページに入れませんでした(セッションが保持されていない可能性があります)"
+        )
+    print("  ✓ 問題ページに入れました\n")
 
 
 # ------------------------------------------------------------
@@ -365,9 +418,13 @@ def run(cfg):
             browser.close()
             return
 
-        print(f"[開く] {cfg['url']}")
-        page.goto(cfg["url"], wait_until="networkidle", timeout=60000)
-        install_cursor(page)
+        # 問題ページを開く。ログイン画面に飛ばされたらその場でログインし直す
+        try:
+            open_quiz_page(page, cfg)
+        except Exception as e:
+            print(f"[エラー] 問題ページを開けませんでした: {e}")
+            browser.close()
+            return
 
         # 解答フォームを待つ
         try:
