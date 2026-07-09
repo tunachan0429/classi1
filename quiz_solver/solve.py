@@ -65,6 +65,8 @@ def load_config():
         "question_timeout": int(os.getenv("QUESTION_TIMEOUT_MS", "20000")),
         # ===== 課題を自動で巡回するモード =====
         "auto_assignments": args.auto_assignments or os.getenv("AUTO_ASSIGNMENTS", "false").lower() == "true",
+        # 自動巡回モードで最初に開く「ホーム画面」のURL(任意。空ならQUIZ_URLを使う)
+        "home_url": os.getenv("HOME_URL", "").strip(),
         # 巡回で使う各ボタンの文言(サイトに合わせて変更可)
         "training_text": os.getenv("TRAINING_TEXT", "学習トレーニング").strip(),
         "assignment_menu_text": os.getenv("ASSIGNMENT_MENU_TEXT", "課題").strip(),
@@ -91,12 +93,19 @@ def load_config():
     # ログインを使うかどうか(URL・ユーザー・パスワードが揃っていれば有効)
     cfg["use_login"] = bool(cfg["login_url"] and cfg["login_user"] and cfg["login_pass"])
 
+    # 自動巡回モードで HOME_URL が指定されていれば、最初に開くURLをそれにする
+    if cfg["auto_assignments"] and cfg["home_url"]:
+        cfg["url"] = cfg["home_url"]
+
     # 必須項目チェック
     problems = []
     if not cfg["api_key"] or cfg["api_key"].startswith("ここに"):
         problems.append("GEMINI_API_KEY が未設定です (.env を確認してください)")
     if not cfg["url"] or "example.com" in cfg["url"]:
-        problems.append("QUIZ_URL が未設定です (.env を確認するか --url で指定してください)")
+        if cfg["auto_assignments"]:
+            problems.append("最初に開くURLが未設定です (.env の HOME_URL か QUIZ_URL にホーム画面のURLを設定してください)")
+        else:
+            problems.append("QUIZ_URL が未設定です (.env を確認するか --url で指定してください)")
     if problems:
         print("[設定エラー]")
         for p in problems:
@@ -691,7 +700,10 @@ def solve_all_questions(page, client, cfg):
         except PWTimeoutError:
             if qi == 1:
                 print(f"[エラー] 解答欄({cfg['form_selector']})が見つかりませんでした。")
-                print("        .env のセレクタ設定を確認してください。")
+                if not cfg["auto_assignments"]:
+                    print("        このURLがホーム画面など「問題ページではない」場合は、")
+                    print("        .env で AUTO_ASSIGNMENTS=true にして課題を自動巡回してください。")
+                print("        (問題ページを直接開く場合は QUESTION_SELECTOR/FORM_SELECTOR も確認)")
             else:
                 print("これ以上、解答欄が見つからないため終了します(全問終了とみなします)。")
             break
@@ -944,6 +956,18 @@ def run_assignments(page, client, cfg):
 # ------------------------------------------------------------
 def run(cfg):
     client = genai.Client(api_key=cfg["api_key"])
+
+    # 起動時の設定を分かりやすく表示(どのモードで何を開くか)
+    print("=" * 56)
+    if cfg["auto_assignments"]:
+        print("  モード: 課題を自動で巡回して全部解く (AUTO_ASSIGNMENTS=true)")
+        print(f"  最初に開くホーム画面: {cfg['url']}")
+    else:
+        print("  モード: 1つの問題ページだけを解く (AUTO_ASSIGNMENTS=false)")
+        print(f"  開く問題ページ: {cfg['url']}")
+        print("  ※課題を自動巡回したい場合は .env で AUTO_ASSIGNMENTS=true にしてください")
+    print(f"  ログイン: {'あり' if cfg['use_login'] else 'なし'}")
+    print("=" * 56 + "\n")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=cfg["headless"], slow_mo=cfg["slow_mo"])
