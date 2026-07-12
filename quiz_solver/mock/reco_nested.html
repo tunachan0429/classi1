@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック おすすめ演習(入れ子: 単元→サブ単元→問題)</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .tabs span { display: inline-block; padding: 8px 16px; border: 1px solid #ccc; cursor: pointer; }
+    .subtopic, .problem { border: 1px solid #ccc; padding: 12px; margin: 8px 0; cursor: pointer; }
+    .symbol { font-weight: bold; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <span>答え合わせ</span>
+    <span onclick="show('subtopics')">おすすめ演習</span>
+  </div>
+
+  <!-- サブ単元一覧(正答率つきの行。> で中に入る) -->
+  <div id="subtopics" class="screen active">
+    <div class="subtopic" onclick="openSub(0)">等位接続詞 正答率:100%(4/4)</div>
+    <div class="subtopic" onclick="openSub(1)">意外な等位接続詞 正答率:100%(4/4)</div>
+    <div class="subtopic" onclick="openSub(2)">相関的な等位接続詞 正答率:75%(3/4)</div>
+  </div>
+
+  <!-- 選んだサブ単元の中の練習問題一覧 -->
+  <div id="problems" class="screen">
+    <div id="problem-list"></div>
+  </div>
+
+  <!-- 問題 -->
+  <div id="quiz" class="screen">
+    <tui-section-question>
+      <tui-question-content>
+        <tui-rich-text><p>1 + 1 は？</p></tui-rich-text>
+        <tui-single-select-form>
+          <label><input type="radio" name="answer-option" value="A"><span class="symbol">ア</span>1</label>
+          <label><input type="radio" name="answer-option" value="B"><span class="symbol">イ</span>2</label>
+          <label><input type="radio" name="answer-option" value="C"><span class="symbol">ウ</span>3</label>
+          <label><input type="radio" name="answer-option" value="D"><span class="symbol">エ</span>4</label>
+        </tui-single-select-form>
+      </tui-question-content>
+    </tui-section-question>
+    <button id="answer-btn">回答</button>
+  </div>
+
+  <script>
+    const SUBS = [
+      ["練習問題_所有代名詞04", "練習問題_所有代名詞05"],
+      ["練習問題_指示04"],
+      ["練習問題_相関04"],
+    ];
+    function show(id) {
+      document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById(id).classList.add('active');
+    }
+    function openSub(i) {
+      let html = '';
+      SUBS[i].forEach(function (name, pi) {
+        html += '<div class="problem" onclick="startProblem()"><span>難易度A</span> ' + name + '</div>';
+      });
+      document.getElementById('problem-list').innerHTML = html;
+      show('problems');
+    }
+    function startProblem() { show('quiz'); }
+  </script>
+</body>
+</html>

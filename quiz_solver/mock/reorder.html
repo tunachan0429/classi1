@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 並べかえ問題</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .blank { border-bottom: 1px solid #333; display: inline-block; min-width: 3em; text-align: center; }
+    #word-bank { margin-top: 20px; padding: 12px; background: #eee; }
+    .tile { display: inline-block; margin: 4px; padding: 8px 14px; border: 1px solid #999;
+            background: #fff; border-radius: 4px; cursor: pointer; }
+    #picked { margin-top: 12px; color: #26c; font-weight: bold; min-height: 1.5em; }
+    #done { display: none; color: green; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <tui-section-question>
+    <h3 class="question-number">小問01</h3>
+    <tui-question-content>
+      <tui-rich-text>
+        <p>次の日本文に合うように，与えられた語(句)を並べかえて，正しい英文を作りなさい。</p>
+        <p>その問題を解くことは不可能だと思った。</p>
+        <p>I ( ) ( ) ( ) ( ) ( ) the problem.</p>
+      </tui-rich-text>
+    </tui-question-content>
+  </tui-section-question>
+
+  <!-- 語句タイル(タップして順に並べる) -->
+  <div id="word-bank">
+    <span class="tile" onclick="tap(this)">impossible</span>
+    <span class="tile" onclick="tap(this)">solve</span>
+    <span class="tile" onclick="tap(this)">it</span>
+    <span class="tile" onclick="tap(this)">thought</span>
+    <span class="tile" onclick="tap(this)">to</span>
+    <button id="clear-btn" onclick="clearAll()" title="クリア">×</button>
+  </div>
+
+  <div id="picked"></div>
+  <button id="answer-btn" onclick="onAnswer()">回答</button>
+  <div id="done">解答が完了しました</div>
+
+  <script>
+    window.__tapOrder = [];
+    function tap(el) {
+      window.__tapOrder.push(el.textContent.trim());
+      el.style.display = 'none';  // タップした語は消える(消費される)
+      document.getElementById('picked').textContent += el.textContent.trim() + ' ';
+    }
+    function clearAll() {
+      window.__tapOrder = [];
+      document.querySelectorAll('.tile').forEach(function (t) { t.style.display = 'inline-block'; });
+      document.getElementById('picked').textContent = '';
+    }
+    function onAnswer() {
+      const remaining = Array.prototype.filter.call(
+        document.querySelectorAll('.tile'),
+        function (t) { return t.style.display !== 'none'; }
+      );
+      if (remaining.length === 0) {
+        document.getElementById('word-bank').style.display = 'none';
+        document.getElementById('answer-btn').style.display = 'none';
+        document.getElementById('done').style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>

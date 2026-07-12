@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 中断ボタン/モーダル</title>
+</head>
+<body>
+  <h1>設問</h1>
+  <!-- 「中断」系のボタン(これを押してはいけない) -->
+  <button id="abort" type="button" onclick="showModal()">解答を中断する</button>
+  <!-- 正しく押してほしい「次へ」ボタン -->
+  <button id="next" type="button" onclick="markNext()">次へ</button>
+
+  <!-- 「解答を中断しますか?」モーダル(最初は非表示) -->
+  <div id="modal" style="display:none">
+    <p>解答を中断しますか？</p>
+    <p>中断しても入力した解答は保存されます。</p>
+    <button type="button" onclick="closeModal()">キャンセル</button>
+    <button type="button" onclick="markAbort()">保存して中断する</button>
+  </div>
+
+  <script>
+    function showModal() { document.getElementById('modal').style.display = 'block'; }
+    function closeModal() {
+      document.getElementById('modal').style.display = 'none';
+      window.__cancelled = true;   // キャンセルが押された印
+    }
+    function markNext() { window.__nextClicked = true; }   // 次へが押された印
+    function markAbort() { window.__aborted = true; }      // 中断が押された印
+  </script>
+</body>
+</html>

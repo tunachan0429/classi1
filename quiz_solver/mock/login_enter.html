@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック Enter送信ログインページ</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    label { display: block; margin: 8px 0; }
+    input { padding: 6px; }
+    #pass-step { display: none; }  /* パスワードは最初は非表示 */
+    #msg { color: green; font-weight: bold; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>ログイン(Enter送信・ボタン無し・モック)</h1>
+  <!-- あえて button[type=submit] を置かない。Enterキーだけで進む/送信するサイトを模す -->
+  <form id="login-form">
+    <div id="user-step">
+      <label>ユーザー名: <input type="text" name="username"></label>
+    </div>
+    <div id="pass-step">
+      <label>パスワード: <input type="password" name="password"></label>
+    </div>
+  </form>
+  <div id="after" style="display:none">
+    <p id="msg">ログイン成功</p>
+    <a id="dashboard" href="#">ダッシュボード</a>
+  </div>
+  <script>
+    const userInput = document.querySelector('input[name=username]');
+    const passInput = document.querySelector('input[name=password]');
+
+    userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (userInput.value) {
+          // ユーザー名OK → パスワード欄を表示(2段階目)
+          document.getElementById('pass-step').style.display = 'block';
+        }
+      }
+    });
+
+    passInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (userInput.value === 'testuser' && passInput.value === 'testpass') {
+          document.getElementById('login-form').style.display = 'none';
+          document.getElementById('after').style.display = 'block';
+        } else {
+          alert('ユーザー名かパスワードが違います');
+        }
+      }
+    });
+  </script>
+</body>
+</html>

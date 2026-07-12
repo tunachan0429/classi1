@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 記号選択の複数空欄(A・B)</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .row { margin: 10px 0; }
+    label { display: block; margin: 4px 0; }
+    .sym { font-weight: bold; margin-right: 6px; }
+    #done { display: none; color: green; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <tui-section-question>
+    <h3 class="question-number">小問01</h3>
+    <tui-question-content>
+      <tui-rich-text>
+        <p>次の日本文に合うように、英文の空欄(A)と(B)に適切な語句を入れなさい。</p>
+        <p>彼が遅れた理由は、バスに乗り遅れたということです。</p>
+      </tui-rich-text>
+    </tui-question-content>
+  </tui-section-question>
+
+  <div class="row"><b>空欄(A)</b>
+    <label><input type="radio" name="blank-a" value="ア"><span class="sym">ア</span>the reason why</label>
+    <label><input type="radio" name="blank-a" value="イ"><span class="sym">イ</span>because of</label>
+    <label><input type="radio" name="blank-a" value="ウ"><span class="sym">ウ</span>The reason for</label>
+    <label><input type="radio" name="blank-a" value="エ"><span class="sym">エ</span>reason to</label>
+  </div>
+  <div class="row"><b>空欄(B)</b>
+    <label><input type="radio" name="blank-b" value="ア"><span class="sym">ア</span>miss the bus</label>
+    <label><input type="radio" name="blank-b" value="イ"><span class="sym">イ</span>missed the bus</label>
+    <label><input type="radio" name="blank-b" value="ウ"><span class="sym">ウ</span>missing bus</label>
+    <label><input type="radio" name="blank-b" value="エ"><span class="sym">エ</span>to miss bus</label>
+  </div>
+
+  <button id="answer-btn" onclick="onAnswer()">回答</button>
+  <div id="done">解答が完了しました</div>
+
+  <script>
+    function onAnswer() {
+      const a = document.querySelector('input[name=blank-a]:checked');
+      const b = document.querySelector('input[name=blank-b]:checked');
+      if (a && b) {
+        document.getElementById('answer-btn').style.display = 'none';
+        document.getElementById('done').style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>

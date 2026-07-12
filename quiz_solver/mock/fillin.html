@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック 複数穴埋め(マークシート型)</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .box { border: 1px solid #333; padding: 2px 6px; margin: 0 3px; }
+    .row { margin: 8px 0; }
+    .row > .kata { display: inline-block; width: 2em; font-weight: bold; }
+    label { margin-right: 10px; }
+    #done { display: none; color: green; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <tui-section-question>
+    <h3 class="question-number">小問01</h3>
+    <tui-question-content>
+      <tui-rich-text>
+        <p>二項定理を用いて，(2x − y)^5 を展開すると，(2x − y)^5 =
+        <span class="box">アイ</span> x^5 +
+        <span class="box">ウ</span> ... となる。</p>
+      </tui-rich-text>
+    </tui-question-content>
+  </tui-section-question>
+
+  <!-- 解答欄(マークシート型): 空欄ごとにラジオ群(name別)で −/±/0-9 -->
+  <div id="mark-sheet">
+    <div class="row"><span class="kata">ア</span>
+      <label><input type="radio" name="ans-a" value="-"><span>−</span></label>
+      <label><input type="radio" name="ans-a" value="±"><span>±</span></label>
+      <label><input type="radio" name="ans-a" value="0"><span>0</span></label>
+      <label><input type="radio" name="ans-a" value="1"><span>1</span></label>
+      <label><input type="radio" name="ans-a" value="2"><span>2</span></label>
+      <label><input type="radio" name="ans-a" value="3"><span>3</span></label>
+      <label><input type="radio" name="ans-a" value="4"><span>4</span></label>
+      <label><input type="radio" name="ans-a" value="5"><span>5</span></label>
+      <label><input type="radio" name="ans-a" value="6"><span>6</span></label>
+      <label><input type="radio" name="ans-a" value="7"><span>7</span></label>
+      <label><input type="radio" name="ans-a" value="8"><span>8</span></label>
+      <label><input type="radio" name="ans-a" value="9"><span>9</span></label>
+    </div>
+    <div class="row"><span class="kata">イ</span>
+      <label><input type="radio" name="ans-b" value="-"><span>−</span></label>
+      <label><input type="radio" name="ans-b" value="±"><span>±</span></label>
+      <label><input type="radio" name="ans-b" value="0"><span>0</span></label>
+      <label><input type="radio" name="ans-b" value="1"><span>1</span></label>
+      <label><input type="radio" name="ans-b" value="2"><span>2</span></label>
+      <label><input type="radio" name="ans-b" value="3"><span>3</span></label>
+      <label><input type="radio" name="ans-b" value="4"><span>4</span></label>
+      <label><input type="radio" name="ans-b" value="5"><span>5</span></label>
+      <label><input type="radio" name="ans-b" value="6"><span>6</span></label>
+      <label><input type="radio" name="ans-b" value="7"><span>7</span></label>
+      <label><input type="radio" name="ans-b" value="8"><span>8</span></label>
+      <label><input type="radio" name="ans-b" value="9"><span>9</span></label>
+    </div>
+    <div class="row"><span class="kata">ウ</span>
+      <label><input type="radio" name="ans-c" value="-"><span>−</span></label>
+      <label><input type="radio" name="ans-c" value="±"><span>±</span></label>
+      <label><input type="radio" name="ans-c" value="0"><span>0</span></label>
+      <label><input type="radio" name="ans-c" value="1"><span>1</span></label>
+      <label><input type="radio" name="ans-c" value="2"><span>2</span></label>
+      <label><input type="radio" name="ans-c" value="3"><span>3</span></label>
+      <label><input type="radio" name="ans-c" value="4"><span>4</span></label>
+      <label><input type="radio" name="ans-c" value="5"><span>5</span></label>
+      <label><input type="radio" name="ans-c" value="6"><span>6</span></label>
+      <label><input type="radio" name="ans-c" value="7"><span>7</span></label>
+      <label><input type="radio" name="ans-c" value="8"><span>8</span></label>
+      <label><input type="radio" name="ans-c" value="9"><span>9</span></label>
+    </div>
+  </div>
+
+  <button id="answer-btn" onclick="onAnswer()">回答</button>
+  <div id="done">解答が完了しました</div>
+
+  <script>
+    function onAnswer() {
+      // ア/イ/ウ 全部選択されていれば完了表示
+      const groups = ['ans-a', 'ans-b', 'ans-c'];
+      const allChecked = groups.every(function (g) {
+        return document.querySelector('input[name=' + g + ']:checked');
+      });
+      if (allChecked) {
+        document.getElementById('mark-sheet').style.display = 'none';
+        document.getElementById('answer-btn').style.display = 'none';
+        document.getElementById('done').style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>

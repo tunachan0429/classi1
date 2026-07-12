@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>モック問題ページ</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .title { color: #333; }
+    table { border-collapse: collapse; margin: 12px 0; }
+    td, th { border: 1px solid #666; padding: 6px 12px; }
+    label { display: block; margin: 6px 0; cursor: pointer; }
+    .symbol { font-weight: bold; margin-right: 8px; }
+    .choice-text { color: #333; }
+  </style>
+</head>
+<body>
+  <tui-section-question class="tui-image-container">
+    <h2 class="title">練習問題_累積度数04</h2>
+    <tui-rich-text class="tui-rich-text"><p>次の問いに答えなさい。</p></tui-rich-text>
+    <div class="question">
+      <tui-question-content>
+        <h3 class="question-number">小問01</h3>
+        <tui-rich-text class="tui-rich-text">
+          <p>次の表は，ある高校生の1日の学習時間について調べた結果である。
+             6時間以上8時間未満の階級の累積度数を求めなさい。</p>
+        </tui-rich-text>
+        <table>
+          <tr><th>階級(時間)</th><th>度数(人)</th></tr>
+          <tr><td>0以上2未満</td><td>3</td></tr>
+          <tr><td>2以上4未満</td><td>7</td></tr>
+          <tr><td>4以上6未満</td><td>6</td></tr>
+          <tr><td>6以上8未満</td><td>4</td></tr>
+          <tr><td>8以上10未満</td><td>2</td></tr>
+        </table>
+        <tui-single-select-form>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_0">
+            <span class="symbol">ア</span><span class="choice-text">16人</span>
+          </label>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_1">
+            <span class="symbol">イ</span><span class="choice-text">20人</span>
+          </label>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_2">
+            <span class="symbol">ウ</span><span class="choice-text">4人</span>
+          </label>
+          <label>
+            <input type="radio" name="answer-option" value="SINGLE_SELECT_3">
+            <span class="symbol">エ</span><span class="choice-text">22人</span>
+          </label>
+        </tui-single-select-form>
+      </tui-question-content>
+    </div>
+  </tui-section-question>
+</body>
+</html>
