@@ -15,6 +15,8 @@ ABORT_BUTTONS_MOCK = pathlib.Path(__file__).parent / "mock" / "abort_buttons.htm
 FULL_FLOW_MOCK = pathlib.Path(__file__).parent / "mock" / "full_flow.html"
 FILLIN_MOCK = pathlib.Path(__file__).parent / "mock" / "fillin.html"
 REORDER_MOCK = pathlib.Path(__file__).parent / "mock" / "reorder.html"
+FILLIN_SYMBOL_MOCK = pathlib.Path(__file__).parent / "mock" / "fillin_symbol.html"
+RECO_NESTED_MOCK = pathlib.Path(__file__).parent / "mock" / "reco_nested.html"
 STUB_ANSWER = "イ"  # 本来Geminiが返す想定の記号(20人 = 3+7+6+4=20 が正解)
 
 
@@ -263,32 +265,88 @@ def test_fillin(browser):
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     page.goto(cfg["url"])
 
-    # 1) 空欄抽出: ア/イ/ウ の3空欄、各12択(−,±,0-9)
+    # 1) 空欄抽出: 3空欄、各12択(−,±,0-9)
     blanks = solve.extract_fillin_blanks(page)
-    labels = [b["label"] for b in blanks]
-    assert labels == ["ア", "イ", "ウ"], f"空欄ラベル抽出失敗: {labels}"
+    assert len(blanks) == 3, f"3空欄のはず: {len(blanks)}"
     assert all(len(b["options"]) == 12 for b in blanks), "各空欄は12択のはず"
-    opt_texts = [o["text"] for o in blanks[0]["options"]]
-    assert opt_texts == solve.FILLIN_OPTIONS, f"選択肢テキスト抽出失敗: {opt_texts}"
-    print(f"穴埋め抽出 OK: {labels} 各{len(blanks[0]['options'])}択")
+    opt_syms = [o["symbol"] for o in blanks[0]["options"]]
+    assert opt_syms == solve.FILLIN_OPTIONS, f"選択肢の記号抽出失敗: {opt_syms}"
+    print(f"穴埋め抽出 OK: {len(blanks)}空欄 各{len(blanks[0]['options'])}択")
 
-    # 2) Geminiをスタブして solve_all_questions を実行 → 各空欄が選択される
+    # 2) Geminiをスタブ(空欄順のリストを返す)して solve_all_questions を実行
     original = solve.ask_gemini_fillin
-    solve.ask_gemini_fillin = lambda client, model, img, qtext, lbls: (
-        {"ア": "3", "イ": "2", "ウ": "-"}, "raw"
-    )
+    solve.ask_gemini_fillin = lambda client, model, img, qtext, bl: (["3", "2", "-"], "raw")
     try:
         results = solve.solve_all_questions(page, None, cfg)
     finally:
         solve.ask_gemini_fillin = original
 
     assert len(results) == 1, f"1問処理する想定だが {len(results)}: {results}"
-    assert page.locator("input[name=ans-a][value='3']").is_checked(), "アが3で選ばれていない"
-    assert page.locator("input[name=ans-b][value='2']").is_checked(), "イが2で選ばれていない"
-    assert page.locator("input[name=ans-c][value='-']").is_checked(), "ウが−で選ばれていない"
+    assert page.locator("input[name=ans-a][value='3']").is_checked(), "空欄1が3で選ばれていない"
+    assert page.locator("input[name=ans-b][value='2']").is_checked(), "空欄2が2で選ばれていない"
+    assert page.locator("input[name=ans-c][value='-']").is_checked(), "空欄3が−で選ばれていない"
     assert page.locator("#done").is_visible(), "回答後の完了表示が出ていない"
     page.close()
-    print(f"穴埋め解答 OK: {results}")
+    print(f"穴埋め解答(数字マークシート) OK: {results}")
+
+
+def test_fillin_symbol(browser):
+    """記号(ア/イ/ウ/エ)を選ぶ複数空欄(A・B等)にも対応できるか。"""
+    cfg = {
+        "url": FILLIN_SYMBOL_MOCK.resolve().as_uri(),
+        "form_selector": "tui-single-select-form",
+        "question_selector": "tui-section-question",
+        "answer_button_selector": "",
+        "next_selector": "",
+        "auto_next": False,
+        "max_questions": 5,
+        "question_timeout": 3000,
+        "model": "dummy",
+    }
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(cfg["url"])
+
+    blanks = solve.extract_fillin_blanks(page)
+    assert len(blanks) == 2, f"2空欄(A,B)のはず: {len(blanks)}"
+    # 各空欄はア/イ/ウ/エの4択
+    assert blanks[0]["options"][0]["symbol"] == "ア", f"記号抽出失敗: {blanks[0]['options'][0]}"
+
+    original = solve.ask_gemini_fillin
+    # 空欄A=ウ, 空欄B=イ を選ばせる
+    solve.ask_gemini_fillin = lambda client, model, img, qtext, bl: (["ウ", "イ"], "raw")
+    try:
+        results = solve.solve_all_questions(page, None, cfg)
+    finally:
+        solve.ask_gemini_fillin = original
+
+    assert len(results) == 1, f"1問処理する想定: {results}"
+    assert page.locator("input[name=blank-a][value='ウ']").is_checked(), "空欄Aがウで選ばれていない"
+    assert page.locator("input[name=blank-b][value='イ']").is_checked(), "空欄Bがイで選ばれていない"
+    page.close()
+    print(f"穴埋め解答(記号ア-エ) OK: {results}")
+
+
+def test_reach_quiz_nested(browser):
+    """おすすめ演習が入れ子(サブ単元→練習問題)でも、内側へたどって問題に到達できるか。"""
+    cfg = {
+        "form_selector": "tui-single-select-form",
+        "question_selector": "tui-section-question",
+        "question_timeout": 3000,
+        "video_modal_hint": "動画で理解",
+        "close_modal_text": "",
+        "recommended_tab_text": "おすすめ演習",
+        "recommended_problem_selector": "",
+        "problem_item_text": "練習問題",
+        "section_hint_text": "を解けるようになるため",
+        "max_drill": 6,
+    }
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(RECO_NESTED_MOCK.resolve().as_uri())
+    reached = solve._reach_quiz(page, cfg)
+    assert reached, "入れ子の一覧をたどって問題に到達できなかった"
+    assert page.locator("tui-single-select-form").is_visible(), "問題フォームが表示されていない"
+    page.close()
+    print("入れ子おすすめ演習の到達 OK (サブ単元→練習問題→問題)")
 
 
 def test_reorder(browser):
@@ -370,6 +428,8 @@ def main():
         # 0g) マークシート型 複数穴埋めのテスト
         print("---- 複数穴埋めテスト ----")
         test_fillin(browser)
+        test_fillin_symbol(browser)
+        test_reach_quiz_nested(browser)
         print()
 
         # 0h) 並べかえ問題のテスト

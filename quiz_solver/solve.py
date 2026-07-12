@@ -98,6 +98,8 @@ def load_config():
         "recommended_tab_text": os.getenv("RECOMMENDED_TAB_TEXT", "おすすめ演習").strip(),
         # 単元アコーディオンを見分ける文言(既定「を解けるようになるため」)
         "section_hint_text": os.getenv("SECTION_HINT_TEXT", "を解けるようになるため").strip(),
+        # おすすめ演習で入れ子の一覧を内側へたどる最大回数(暴走防止)
+        "max_drill": int(os.getenv("MAX_DRILL", "6")),
         # 解く問題数の上限(暴走防止のセーフティ)
         "max_questions": args.max or int(os.getenv("MAX_QUESTIONS", "200")),
         # 次の問題を待つ/解答欄を待つときのタイムアウト(ミリ秒)
@@ -344,70 +346,94 @@ def _radio_option_text(inp):
     return _normalize_option(candidates[0]) if candidates else ""
 
 
-def _blank_label(inp):
-    """ラジオが属する空欄のラベル(ア/イ/…)を、行のテキストから推定する。"""
+def _option_info(inp):
+    """1つのラジオの選択肢情報を返す。
+
+    {"text": 表示テキスト全体, "symbol": 先頭の記号(ア/イ..)か数字/符号}
+    数字マークシートでも、記号付き選択肢(ア/イ/ウ/エ)でも、語句選択肢でも扱える。
+    """
+    text = ""
     try:
-        return inp.evaluate(
-            """
-            (el) => {
-              const KATA = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
-              let node = el;
-              for (let up = 0; up < 6 && node; up++) {
-                const t = node.textContent || '';
-                for (const ch of t) { if (KATA.includes(ch)) return ch; }
-                node = node.parentElement;
-              }
-              return '';
-            }
-            """
-        ) or ""
+        label = inp.locator("xpath=ancestor::label[1]")
+        if label.count() > 0:
+            text = label.first.inner_text() or ""
     except Exception:
-        return ""
+        pass
+    if not text:
+        try:
+            text = inp.get_attribute("value") or ""
+        except Exception:
+            pass
+    text = " ".join((text or "").split())  # 空白正規化
+    symbol = ""
+    norm = _normalize_option(text)
+    if text and text[0] in SYMBOLS:
+        symbol = text[0]           # ア/イ/ウ/エ で始まる選択肢
+    elif norm in FILLIN_OPTIONS:
+        symbol = norm              # 数字・符号のマークシート
+    return {"text": text, "symbol": symbol}
 
 
 def extract_fillin_blanks(page):
-    """穴埋めの各空欄を出現順に返す。
+    """複数空欄(各空欄=ラジオ1グループ)を出現順に返す。
 
-    戻り値: [{"label": "ア", "name": "...", "options": [{"text": "3", "input": loc}, ...]}]
-    label は行から推定した カタカナ。取れない場合は ア,イ,ウ… の並びで補完する。
+    戻り値: [{"index": 0, "name": "...",
+              "options": [{"text": "ア to solve", "symbol": "ア", "input": loc}, ...]}]
+    選択肢は 数字/符号 でも 記号(ア/イ) でも 語句 でも構わない。
     """
     groups = radio_groups(page)
     blanks = []
     for gi, (name, inputs) in enumerate(groups):
         options = []
         for inp in inputs:
-            options.append({"text": _radio_option_text(inp), "input": inp})
-        label = _blank_label(inputs[0]) if inputs else ""
-        if label not in KATA_SEQUENCE:
-            label = ""  # 推定失敗
-        blanks.append({"label": label, "name": name, "options": options})
-    # ラベルが取れなかった空欄は、出現順(ア,イ,ウ…)で補完する
-    for gi, b in enumerate(blanks):
-        if not b["label"] and gi < len(KATA_SEQUENCE):
-            b["label"] = KATA_SEQUENCE[gi]
+            info = _option_info(inp)
+            options.append({"text": info["text"], "symbol": info["symbol"], "input": inp})
+        blanks.append({"index": gi, "name": name, "options": options})
     return blanks
 
 
-def ask_gemini_fillin(client, model, image_bytes, question_text, labels):
-    """複数穴埋め問題を解かせ、{ラベル: 値} の辞書と生テキストを返す。"""
-    labels_str = ", ".join(labels)
-    prompt = f"""あなたは日本の数学・試験問題を解く専門家です。
-添付画像は「複数の空欄をうめる」マークシート型の問題です。画像を正確に読み取り、計算して解いてください。
+def _fillin_is_marksheet(blanks):
+    """全空欄の選択肢が 数字・符号(−/±/0-9) だけかどうか(計算系マークシート判定)。"""
+    for b in blanks:
+        syms = [o["symbol"] for o in b["options"]]
+        if not syms or any(s not in FILLIN_OPTIONS for s in syms):
+            return False
+    return True
 
+
+def ask_gemini_fillin(client, model, image_bytes, question_text, blanks):
+    """複数空欄問題を解かせ、(空欄の順に選んだ答えのリスト, 生テキスト) を返す。"""
+    marksheet = _fillin_is_marksheet(blanks)
+    lines = []
+    for i, b in enumerate(blanks):
+        opts = [(o["symbol"] or o["text"]) for o in b["options"]]
+        lines.append(f"  空欄{i + 1}: {' / '.join(opts)}")
+    options_block = "\n".join(lines)
+
+    if marksheet:
+        extra = (
+            "各空欄は数字や符号(-, ±, 0〜9)を選ぶマークシートです。"
+            "係数などを計算し、桁ごとに左から順に数字を選んでください。"
+            "(例: 係数が -80 なら 符号の空欄=\"-\"、次の桁=\"8\"、\"0\")\n"
+        )
+    else:
+        extra = (
+            "各空欄には、その空欄の選択肢の中から、日本語の意味・文法・計算に合う正しいものを1つ選びます。"
+            "記号(ア/イ/ウ/エ)がある場合はその記号で答えてください。\n"
+        )
+
+    prompt = f"""あなたは日本の試験問題を解く専門家です。
+添付画像は「複数の空欄をうめる」問題です。画像を正確に読み取り、解いてください。
+{extra}
 【設問テキスト(参考)】
 {question_text or "(画像を参照)"}
 
-【空欄】
-この問題の空欄は次の {len(labels)} 個です(この順番): {labels_str}
-各空欄には、次のいずれか【1文字】が入ります: -, ±, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
-  ・ "-" は負の符号(マイナス)
-  ・ "±" はプラスマイナス
-  ・ 数字は 0〜9
-例: 係数が 32 なら、2桁の空欄は左から "3","2"。係数が -80 なら 符号の空欄が "-"、続く数字が "8","0"。
+【各空欄の選択肢】(空欄は画面の上から順に {len(blanks)} 個)
+{options_block}
 
 【回答形式】
-必ず次のJSONだけを出力してください(前後に説明やコードブロック記号は不要):
-{{{', '.join(f'"{l}": "<1文字>"' for l in labels)}}}
+空欄の順に、選んだ選択肢を入れたJSON配列だけを出力してください(前後に説明やコードブロック記号は不要)。
+例: ["ア", "ウ"]  や  ["3", "2", "-", "8", "0"]
 """
     contents = [
         types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
@@ -415,48 +441,58 @@ def ask_gemini_fillin(client, model, image_bytes, question_text, labels):
     ]
     resp = _generate_with_retry(client, model, contents)
     text = (resp.text or "").strip()
-    answers = {}
-    m = re.search(r"\{.*\}", text, re.DOTALL)
+    answers = []
+    m = re.search(r"\[.*\]", text, re.DOTALL)
     if m:
         try:
             data = json.loads(m.group(0))
-            for k, v in data.items():
-                answers[k] = _normalize_option(str(v))
+            answers = [str(x).strip() for x in data]
         except Exception:
             pass
     return answers, text
 
 
-def select_fillin(page, blanks, answers):
-    """各空欄について、Geminiの答えに一致するラジオをクリックする。
+def _match_fillin_option(options, ans):
+    """Geminiの答え ans に一致する選択肢を、記号→テキストの順で探す。"""
+    a = _normalize_option(ans)
+    if not a:
+        return None
+    # 1) 記号(ア/イ/数字/符号)の完全一致
+    for o in options:
+        if o["symbol"] and _normalize_option(o["symbol"]) == a:
+            return o
+    # 2) テキストの完全一致
+    for o in options:
+        if _normalize_option(o["text"]) == a:
+            return o
+    # 3) ゆるい一致(記号が先頭、または相互に部分一致)
+    for o in options:
+        if o["symbol"] and a.startswith(_normalize_option(o["symbol"])):
+            return o
+    for o in options:
+        t = _normalize_option(o["text"])
+        if t and (a in t or t in a):
+            return o
+    return None
 
-    answers: {ラベル: 値}。ラベルで引けない場合は出現順で対応づける。
-    戻り値: 選択できた空欄数。
-    """
-    # 出現順のラベル一覧(Geminiが順番の配列で返したときのフォールバック用)
-    ordered_vals = list(answers.values())
+
+def select_fillin(page, blanks, answers):
+    """各空欄について、Geminiの答え(空欄順のリスト)に一致するラジオをクリックする。"""
     picked = 0
-    for gi, b in enumerate(blanks):
-        val = answers.get(b["label"])
-        if val is None and gi < len(ordered_vals):
-            val = ordered_vals[gi]
-        val = _normalize_option(val or "")
-        if not val:
-            print(f"    空欄 {b['label']}: 解答が得られませんでした(スキップ)")
+    for i, b in enumerate(blanks):
+        if i >= len(answers):
+            print(f"    空欄{i + 1}: 解答が得られませんでした(スキップ)")
             continue
-        # 値に一致するラジオを探す
-        target = None
-        for o in b["options"]:
-            if _normalize_option(o["text"]) == val:
-                target = o
-                break
+        ans = answers[i]
+        target = _match_fillin_option(b["options"], ans)
         if target is None:
-            print(f"    空欄 {b['label']}: 値「{val}」に対応する選択肢が見つかりません")
+            print(f"    空欄{i + 1}: 答え「{ans}」に対応する選択肢が見つかりません")
             continue
         label_el = target["input"].locator("xpath=ancestor::label[1]")
         click_target = label_el if label_el.count() > 0 else target["input"]
         move_and_click(page, click_target.first)
-        print(f"    空欄 {b['label']} = 「{val}」を選択")
+        shown = target["symbol"] or target["text"][:12]
+        print(f"    空欄{i + 1} = 「{shown}」を選択")
         picked += 1
         time.sleep(0.15)
     return picked
@@ -1107,14 +1143,13 @@ def solve_all_questions(page, client, cfg):
             q_text = ""
 
         if qtype == "fillin":
-            # ===== マークシート型の複数穴埋め(各空欄に −/±/0-9) =====
+            # ===== 複数空欄(マークシートの数字 / 記号ア-エ / 語句 など何でも) =====
             blanks = extract_fillin_blanks(page)
-            labels = [b["label"] for b in blanks]
-            print(f"  複数穴埋め問題を検出({len(blanks)}空欄: {', '.join(labels)})")
+            print(f"  複数空欄の問題を検出({len(blanks)}空欄)")
             print("  Geminiに問い合わせ中...")
             try:
                 answers, raw = ask_gemini_fillin(
-                    client, cfg["model"], img_bytes, q_text, labels
+                    client, cfg["model"], img_bytes, q_text, blanks
                 )
             except Exception as e:  # noqa: BLE001
                 print(f"  [中断] Geminiへの問い合わせに失敗しました: {e}")
@@ -1126,7 +1161,8 @@ def solve_all_questions(page, client, cfg):
             else:
                 n_picked = select_fillin(page, blanks, answers)
                 summary = " ".join(
-                    f"{b['label']}={answers.get(b['label'], '?')}" for b in blanks
+                    f"空欄{i + 1}={answers[i] if i < len(answers) else '?'}"
+                    for i in range(len(blanks))
                 )
                 print(f"  ✓ {n_picked}/{len(blanks)} 個の空欄を選択  ({summary})")
                 results.append((qi, summary))
@@ -1350,84 +1386,52 @@ def _dismiss_video_modal(page, cfg):
     return False
 
 
-def _click_first_recommended_problem(page, cfg):
-    """おすすめ演習の問題一覧から、一番上の問題を選んでクリックする。
-
-    画面に「おすすめ演習」タブがあれば先にそれを押し、
-    単元(アコーディオン)があれば先頭を展開してから、練習問題を選ぶ。
-    """
-    # 1) 「おすすめ演習」タブが見えていたら押す(タブ切り替え)
-    reco_tab_text = cfg.get("recommended_tab_text", "おすすめ演習")
+def _click_recommended_tab(page, cfg):
+    """「おすすめ演習」タブが見えていたら押す。"""
+    txt = cfg.get("recommended_tab_text", "おすすめ演習")
     try:
-        tab = page.get_by_text(reco_tab_text, exact=False)
+        tab = page.get_by_text(txt, exact=False)
         if tab.count() > 0 and tab.first.is_visible():
             move_and_click(page, tab.first)
-            print(f"  「{reco_tab_text}」タブを押します")
+            print(f"  「{txt}」タブを押します")
             time.sleep(0.6)
+            return True
     except Exception:
         pass
+    return False
 
-    # 2) 単元のアコーディオン(展開できるカード)を開く
-    #    [人称代名詞] / [指示代名詞] 等の見出しがあれば先頭をクリックして展開
-    _expand_first_section(page, cfg)
 
-    # 3) 練習問題を見つけてクリック
-    sel = cfg.get("recommended_problem_selector", "")
-    if sel:
-        loc = page.locator(sel)
-        if _loc_visible(loc):
-            print("  おすすめ演習の先頭の問題を選びます")
-            move_and_click(page, loc.first)
-            return True
-        return False
-
-    key = cfg.get("problem_item_text", "練習問題")
+def _click_first_text_item(page, key, max_len=90):
+    """key を含む、表示中で短めの項目を上から探してクリックする。"""
     try:
         loc = page.get_by_text(key, exact=False)
         n = loc.count()
     except Exception:
-        n = 0
+        return False
     for i in range(min(n, 40)):
         el = loc.nth(i)
         try:
             if not el.is_visible():
                 continue
-            t = (el.inner_text() or "").strip()
+            t = " ".join((el.inner_text() or "").split())
         except Exception:
             continue
-        if key in t and len(t) < 60:
-            print(f"  おすすめ演習の問題「{t[:30]}」を選びます")
+        if key in t and len(t) < max_len:
+            print(f"  項目「{t[:34]}」を開きます")
             move_and_click(page, el)
             return True
     return False
 
 
 def _expand_first_section(page, cfg):
-    """おすすめ演習のアコーディオン(単元カード)の先頭を開く。
-
-    [人称代名詞] / [指示代名詞] 等の見出しカードが折りたたまれている場合、
-    先頭をクリックして中の練習問題一覧を表示させる。
-    """
+    """折りたたまれた単元カード(アコーディオン)の先頭を開く。開いたら True。"""
     section_hint = cfg.get("section_hint_text", "を解けるようになるため")
-    try:
-        sections = page.get_by_text(section_hint, exact=False)
-        n = sections.count()
-    except Exception:
-        n = 0
-    for i in range(min(n, 20)):
-        el = sections.nth(i)
-        try:
-            if not el.is_visible():
-                continue
-        except Exception:
-            continue
-        move_and_click(page, el)
+    if section_hint and _click_first_text_item(page, section_hint):
         print("  単元カードを展開します")
         time.sleep(0.5)
         return True
-    # 代替: 「▽」矢印や details/summary があれば開く
     try:
-        arrows = page.locator("[aria-expanded='false'], details:not([open]), .accordion:not(.open)")
+        arrows = page.locator("[aria-expanded='false'], details:not([open])")
         if arrows.count() > 0 and arrows.first.is_visible():
             move_and_click(page, arrows.first)
             print("  アコーディオンを展開します")
@@ -1438,24 +1442,50 @@ def _expand_first_section(page, cfg):
     return False
 
 
+def _click_first_item(page, cfg):
+    """おすすめ演習の中で、次に入るべき項目を1つだけクリックする。
+
+    優先順: 個別の練習問題(leaf) → 折りたたみ単元を開く → サブ単元(正答率つきの行)。
+    """
+    # 1) 個別の練習問題(明示セレクタ or 文言)
+    sel = cfg.get("recommended_problem_selector", "")
+    if sel:
+        loc = page.locator(sel)
+        if _loc_visible(loc):
+            print("  おすすめ演習の先頭の問題を選びます")
+            move_and_click(page, loc.first)
+            return True
+    if _click_first_text_item(page, cfg.get("problem_item_text", "練習問題")):
+        return True
+    # 2) 折りたたみ単元を開く
+    if _expand_first_section(page, cfg):
+        return True
+    # 3) サブ単元(正答率つきの行など)に入る
+    if _click_first_text_item(page, "正答率"):
+        return True
+    return False
+
+
 def _reach_quiz(page, cfg):
-    """「開始する」を押した後、問題画面まで進む。
+    """「開始する」を押した後、問題画面まで進む(入れ子の一覧も内側へたどる)。
 
     - 「動画で理解を深めよう」モーダルが出たら閉じる
-    - すぐ問題が出なければ、おすすめ演習の一覧とみなして先頭の問題を選ぶ
+    - 「おすすめ演習」タブがあれば押す
+    - 問題が出るまで、練習問題/単元/サブ単元 を上から順にたどっていく
     問題(単一選択/穴埋め/並べかえ)にたどり着けたら True。
     """
     _dismiss_video_modal(page, cfg)
-    # すぐ問題が出るか(短め)
     if _wait_for_question(page, cfg, timeout_ms=3000) is not None:
         return True
-    # おすすめ演習の問題一覧かも → 先頭の問題を選ぶ
-    if _click_first_recommended_problem(page, cfg):
+    _click_recommended_tab(page, cfg)
+    for _ in range(cfg.get("max_drill", 6)):
         _dismiss_video_modal(page, cfg)
-        if _wait_for_question(page, cfg) is not None:
+        if _wait_for_question(page, cfg, timeout_ms=2500) is not None:
             return True
-    # 最後にもう一度だけ待つ
-    return _wait_for_question(page, cfg, timeout_ms=5000) is not None
+        if not _click_first_item(page, cfg):
+            break
+        time.sleep(0.5)
+    return _wait_for_question(page, cfg, timeout_ms=3000) is not None
 
 
 def _find_start_button(page, cfg, wait_ms):
